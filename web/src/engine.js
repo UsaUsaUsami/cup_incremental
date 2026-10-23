@@ -1,0 +1,424 @@
+// 3つの試作（A カード式・B インクリ特化・C 固定配置＋ペグ）で共通の部品。
+// 盤面（カップ・ゲート・玉・ペグ）、ミニガン、描画の道具、入力、ループを持つ。
+// 各試作は game オブジェクト { update, drawTop, drawPanel, buttons, onSlot, snapshot, restore } を渡して run() する。
+
+const W = 720, H = 1280;
+const BOARD_L = 40, BOARD_R = 680, COLS = 4;
+const ROW_YS = [340, 510, 680];
+const GATE_W = 130, GATE_H = 44;
+const CUP_Y = 175, CUP_STRIP_TOP = 120, CUP_STRIP_BOTTOM = 250;
+const COLLECT_Y = 860;
+const BALL_R = 7, BALL_R_MAX = 26, BALL_CAP = 80;
+const GRAVITY = 900;
+const GUN = { x: 360, y: 875 };
+const BULLET_RATE = 45, BULLET_SPEED = 2600;
+const PANEL_Y = 905;
+const PEG_R = 6;
+const SUFFIX = ["", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc"];
+const HUD = '"Chakra Petch", "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", system-ui, sans-serif';
+
+// apply(b, B, idx): 玉 b がマス idx のゲートを通ったときの効果
+const GATE_DEFS = {
+  // 値を変える
+  add: { label: "+3", desc: "値 +3", color: [0.35, 0.75, 0.45], apply: b => { b.val += 3; } },
+  mul: { label: "×2", desc: "値 ×2", color: [0.35, 0.55, 0.9], apply: b => { b.val *= 2; } },
+  sq: { label: "x²", desc: "値を2乗", color: [0.85, 0.45, 0.8], apply: b => { b.val = b.val * b.val; } },
+  // 経路を変える
+  bounce: { label: "跳ね", desc: "玉を打ち上げる", color: [0.95, 0.6, 0.25],
+    apply: (b, B, idx) => { b.vy = -760; b.vx *= 0.3; b.passed = new Set([idx]); } },
+  right: { label: "→", desc: "玉を右の列へ", color: [0.3, 0.7, 0.75], apply: (b, B, idx) => shiftColumn(b, idx, 1) },
+  left: { label: "←", desc: "玉を左の列へ", color: [0.3, 0.7, 0.75], apply: (b, B, idx) => shiftColumn(b, idx, -1) },
+  // 盤面に効く（自分は玉の値を変えない）
+  cheer: { label: "応援", desc: "隣の効果が2回", color: [0.85, 0.75, 0.3], apply: () => {} },
+  charge: { label: "充電", desc: "隣の回数 +1", color: [0.6, 0.6, 0.9],
+    apply: (b, B, idx) => { for (const k of neighbors(idx)) { const g = B.slots[k]; if (g) g.uses = Math.min(g.max, g.uses + 1); } } },
+  // 守りに効く
+  shield: { label: "盾", desc: "通過でブロック+1", color: [0.55, 0.6, 0.68], apply: (b, B) => { B.blockGain += 1; } },
+};
+
+function neighbors(i) {
+  const col = i % COLS, row = Math.floor(i / COLS), out = [];
+  if (col > 0) out.push(i - 1);
+  if (col < COLS - 1) out.push(i + 1);
+  if (row > 0) out.push(i - COLS);
+  if (row < ROW_YS.length - 1) out.push(i + COLS);
+  return out;
+}
+
+function shiftColumn(b, idx, dir) {
+  const col = Math.min(Math.max(idx % COLS + dir, 0), COLS - 1);
+  const colW = (BOARD_R - BOARD_L) / COLS;
+  b.x = BOARD_L + (col + 0.5) * colW;
+  b.vx = 0;
+}
+
+// --- 数の道具 ---
+function fmt(x) {
+  if (!Number.isFinite(x)) return "∞";
+  if (x < 1000) return Math.floor(x).toString();
+  const e = Math.floor(Math.log(x) / Math.log(1000));
+  if (e < SUFFIX.length) return (x / Math.pow(1000, e)).toFixed(2) + SUFFIX[e];
+  const e10 = Math.floor(Math.log10(x));
+  return (x / Math.pow(10, e10)).toFixed(2) + "e" + e10;
+}
+const ballRadius = v => Math.min(BALL_R + 4 * Math.log10(Math.max(v, 1)), BALL_R_MAX);
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+
+function slotRect(i) {
+  const col = i % COLS, row = Math.floor(i / COLS);
+  const colW = (BOARD_R - BOARD_L) / COLS;
+  const cx = BOARD_L + (col + 0.5) * colW;
+  return { x: cx - GATE_W / 2, y: ROW_YS[row] - GATE_H / 2, w: GATE_W, h: GATE_H };
+}
+const inRect = (r, x, y, pad = 0) => x >= r.x - pad && x <= r.x + r.w + pad && y >= r.y - pad && y <= r.y + r.h + pad;
+
+// --- 盤面 ---
+function makePegs() {
+  // ゲートの行の間に、互い違いの釘を並べる
+  const pegs = [];
+  [425, 595, 775].forEach((y, k) => {
+    for (let x = BOARD_L + (k % 2 ? 40 : 80); x < BOARD_R - 20; x += 80) pegs.push({ x, y });
+  });
+  return pegs;
+}
+
+function makeBoard(opts = {}) {
+  return {
+    slots: Array(COLS * ROW_YS.length).fill(null),
+    balls: [], bullets: [],
+    pegs: opts.pegs ? makePegs() : [],
+    cupX: W / 2, autoCup: !!opts.autoCup, cupHeldUntil: 0, t: 0,
+    highlight: new Set(),
+    toPour: 0, pourAcc: 0, pourRate: opts.pourRate || 6, baseVal: 1,
+    useDisplay: opts.useDisplay || "count", // count: 残り回数 / bar: 容量バー / none
+    ammoShown: 0, firing: false, gunSpin: 0, hitShake: 0, bulletAcc: 0, blockGain: 0,
+    onCollect: null,
+  };
+}
+
+const newGate = (type, uses, max = uses) => ({ type, uses, max, flash: 0, block: 0 });
+
+function spawnBall(B) {
+  B.balls.push({ x: B.cupX + (Math.random() - 0.5) * 20, y: CUP_Y + 30, vx: (Math.random() - 0.5) * 60, vy: 60,
+    val: B.baseVal, passed: new Set() });
+}
+
+function applyGate(B, b, g, idx) {
+  if (g.uses < 1) { g.block = 0.2; return; }
+  g.uses -= 1;
+  g.flash = 0.15;
+  // 隣に「応援」があると効果が2回かかる（応援どうしは重ならない）
+  const cheered = g.type !== "cheer" && neighbors(idx).some(k => B.slots[k] && B.slots[k].type === "cheer");
+  const times = cheered ? 2 : 1;
+  for (let t = 0; t < times; t++) GATE_DEFS[g.type].apply(b, B, idx);
+}
+
+function boardUpdate(B, dt) {
+  B.t += dt;
+  if (B.autoCup && B.t > B.cupHeldUntil) B.cupX = W / 2 + Math.sin(B.t * 0.7) * 260;
+
+  if (B.toPour > 0) {
+    B.pourAcc += B.pourRate * dt;
+    while (B.pourAcc >= 1 && B.toPour > 0) {
+      if (B.balls.length >= BALL_CAP) { B.pourAcc = 1; break; }
+      B.pourAcc -= 1;
+      B.toPour -= 1;
+      spawnBall(B);
+    }
+  }
+  for (const g of B.slots) {
+    if (!g) continue;
+    g.flash = Math.max(0, g.flash - dt);
+    g.block = Math.max(0, g.block - dt);
+  }
+
+  const colW = (BOARD_R - BOARD_L) / COLS;
+  for (let i = B.balls.length - 1; i >= 0; i--) {
+    const b = B.balls[i];
+    b.vy += GRAVITY * dt;
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    const r = ballRadius(b.val);
+    if (b.x < BOARD_L + r) { b.x = BOARD_L + r; b.vx = Math.abs(b.vx) * 0.6; }
+    else if (b.x > BOARD_R - r) { b.x = BOARD_R - r; b.vx = -Math.abs(b.vx) * 0.6; }
+    for (const p of B.pegs) {
+      const dx = b.x - p.x, dy = b.y - p.y, d = Math.hypot(dx, dy), min = r + PEG_R;
+      if (d > 0 && d < min) {
+        const nx = dx / d, ny = dy / d;
+        b.x = p.x + nx * min;
+        b.y = p.y + ny * min;
+        const vn = b.vx * nx + b.vy * ny;
+        if (vn < 0) {
+          b.vx -= 1.5 * vn * nx;
+          b.vy -= 1.5 * vn * ny;
+          b.vx += (Math.random() - 0.5) * 80; // 当たり方で左右に散らす
+        }
+      }
+    }
+    for (let row = 0; row < ROW_YS.length; row++) {
+      if (Math.abs(b.y - ROW_YS[row]) > GATE_H / 2) continue;
+      const col = Math.min(Math.max(Math.floor((b.x - BOARD_L) / colW), 0), COLS - 1);
+      const idx = row * COLS + col;
+      const g = B.slots[idx];
+      if (g && !b.passed.has(idx) && inRect(slotRect(idx), b.x, b.y)) {
+        b.passed.add(idx);
+        applyGate(B, b, g, idx);
+      }
+    }
+    if (b.y >= COLLECT_Y) {
+      B.balls.splice(i, 1);
+      if (B.onCollect) B.onCollect(b.val);
+    }
+  }
+
+  if (B.firing) {
+    B.gunSpin += dt * 40;
+    B.hitShake = 6;
+    B.bulletAcc += BULLET_RATE * dt;
+    while (B.bulletAcc >= 1) {
+      B.bulletAcc -= 1;
+      const dx = (Math.random() - 0.5) * 0.12, len = Math.hypot(dx, 1);
+      B.bullets.push({ x: GUN.x, y: GUN.y - 40, vx: dx / len * BULLET_SPEED, vy: -BULLET_SPEED / len });
+    }
+  }
+  for (let i = B.bullets.length - 1; i >= 0; i--) {
+    const bl = B.bullets[i];
+    bl.x += bl.vx * dt;
+    bl.y += bl.vy * dt;
+    if (bl.y < 70) B.bullets.splice(i, 1);
+  }
+  B.hitShake = Math.max(0, B.hitShake - dt * 30);
+}
+
+// --- 描画の道具 ---
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+let scale = 1;
+
+const rgb = (c, a = 1) => `rgba(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)},${a})`;
+const mix = (c, t, k) => c.map((v, i) => v + (t[i] - v) * k);
+function hsv(h, s, v) {
+  const i = Math.floor(h * 6), f = h * 6 - i, p = v * (1 - s), q = v * (1 - f * s), u = v * (1 - (1 - f) * s);
+  return [[v, u, p], [q, v, p], [p, v, u], [p, q, v], [u, p, v], [v, p, q]][((i % 6) + 6) % 6];
+}
+
+function text(str, x, y, size, color, align = "left", weight = 500) {
+  ctx.font = `${weight} ${size}px ${HUD}`;
+  ctx.fillStyle = color;
+  ctx.textAlign = align;
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(str, x, y);
+}
+
+function wrapLines(str, maxW, size) {
+  ctx.font = `500 ${size}px ${HUD}`;
+  const out = [];
+  for (const para of str.split("\n")) {
+    let line = "";
+    for (const ch of para) {
+      if (ctx.measureText(line + ch).width > maxW && line) { out.push(line); line = ch; }
+      else line += ch;
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+function drawLines(str, x, y, size, color, maxW = W - 32, maxLines = 4) {
+  wrapLines(str, maxW, size).slice(0, maxLines).forEach((ln, i) => text(ln, x, y + i * (size + 6), size, color));
+}
+
+function drawBar(x, y, w, h, ratio, color, shake = 0) {
+  const sx = (Math.random() - 0.5) * 2 * shake, sy = (Math.random() - 0.5) * 2 * shake;
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  ctx.fillRect(x + sx, y + sy, w, h);
+  ctx.fillStyle = color;
+  ctx.fillRect(x + sx, y + sy, w * Math.min(Math.max(ratio, 0), 1), h);
+}
+
+function drawGateBox(r, type, opts = {}) {
+  let c = GATE_DEFS[type].color;
+  if (opts.dim) c = c.map(v => v * 0.4);
+  else if (opts.flash) c = mix(c, [1, 1, 1], 0.35);
+  ctx.fillStyle = rgb(c);
+  ctx.fillRect(r.x, r.y, r.w, r.h);
+  text(GATE_DEFS[type].label, r.x + r.w / 2, r.y + r.h / 2 + 11, 30, "#fff", "center", 700);
+}
+
+function drawBoard(B) {
+  ctx.fillStyle = "rgba(255,255,255,0.04)";
+  ctx.fillRect(BOARD_L, CUP_STRIP_TOP, BOARD_R - BOARD_L, CUP_STRIP_BOTTOM - CUP_STRIP_TOP);
+  text(B.autoCup ? "ドラッグでカップを動かす（離すと自動）" : "ここをドラッグでカップを動かす",
+    BOARD_L + 8, CUP_STRIP_BOTTOM - 10, 16, "rgba(255,255,255,0.35)");
+  ctx.fillStyle = "#f2d98c";
+  ctx.beginPath();
+  ctx.moveTo(B.cupX - 40, CUP_Y - 30); ctx.lineTo(B.cupX + 40, CUP_Y - 30);
+  ctx.lineTo(B.cupX + 28, CUP_Y + 30); ctx.lineTo(B.cupX - 28, CUP_Y + 30);
+  ctx.closePath(); ctx.fill();
+
+  ctx.fillStyle = "rgba(200,205,220,0.55)";
+  for (const p of B.pegs) { ctx.beginPath(); ctx.arc(p.x, p.y, PEG_R, 0, Math.PI * 2); ctx.fill(); }
+
+  B.slots.forEach((g, i) => {
+    const r = slotRect(i);
+    if (!g) {
+      const lit = B.highlight.has(i);
+      ctx.strokeStyle = lit ? "#ffd966" : "rgba(255,255,255,0.18)";
+      ctx.lineWidth = lit ? 4 : 2;
+      ctx.strokeRect(r.x, r.y, r.w, r.h);
+      text(lit ? "ここに置く" : "空き", r.x + r.w / 2, r.y + r.h / 2 + 7, lit ? 18 : 20,
+        lit ? "#ffd966" : "rgba(255,255,255,0.3)", "center");
+      return;
+    }
+    drawGateBox(r, g.type, { dim: g.uses < 1 || g.block > 0, flash: g.flash > 0 });
+    if (B.useDisplay === "count") {
+      text(`残り ${Math.floor(g.uses)}`, r.x + r.w / 2, r.y + r.h + 22, 16, "rgba(255,255,255,0.6)", "center");
+    } else if (B.useDisplay === "bar") {
+      const ratio = g.uses / g.max;
+      ctx.fillStyle = "rgba(255,255,255,0.15)";
+      ctx.fillRect(r.x, r.y + r.h + 4, r.w, 6);
+      ctx.fillStyle = ratio < 0.25 ? "#ff6650" : "#e6e6e6";
+      ctx.fillRect(r.x, r.y + r.h + 4, r.w * ratio, 6);
+    }
+  });
+
+  ctx.fillStyle = "rgba(229,80,77,0.35)";
+  ctx.fillRect(BOARD_L, COLLECT_Y, BOARD_R - BOARD_L, 30);
+  text(`弾倉 ${fmt(B.ammoShown)}`, BOARD_L + 10, COLLECT_Y + 23, 20, "#fff", "left", 700);
+  ctx.fillStyle = "#595e6b";
+  ctx.fillRect(GUN.x - 34, GUN.y - 6, 68, 26);
+  ctx.strokeStyle = "#9a9eab";
+  ctx.lineWidth = 5;
+  for (let k = 0; k < 3; k++) {
+    const x = GUN.x + Math.sin(B.gunSpin + k * Math.PI * 2 / 3) * 9;
+    ctx.beginPath(); ctx.moveTo(x, GUN.y - 6); ctx.lineTo(x, GUN.y - 46); ctx.stroke();
+  }
+  if (B.firing) {
+    ctx.fillStyle = "rgba(255,204,77,0.9)";
+    ctx.beginPath(); ctx.arc(GUN.x, GUN.y - 52, 8 + Math.random() * 6, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.strokeStyle = "#ffd966";
+  ctx.lineWidth = 3;
+  for (const bl of B.bullets) {
+    const len = Math.hypot(bl.vx, bl.vy);
+    ctx.beginPath(); ctx.moveTo(bl.x - bl.vx / len * 26, bl.y - bl.vy / len * 26); ctx.lineTo(bl.x, bl.y); ctx.stroke();
+  }
+
+  for (const b of B.balls) {
+    const mag = Math.log10(Math.max(b.val, 1));
+    const r = ballRadius(b.val);
+    ctx.fillStyle = rgb(hsv((0.12 + mag * 0.11) % 1, 0.65, 1));
+    ctx.beginPath(); ctx.arc(b.x, b.y, r, 0, Math.PI * 2); ctx.fill();
+    if (b.val >= 2) {
+      const fs = Math.round(Math.min(Math.max(r * 0.9, 9), 22));
+      text(fmt(b.val), b.x, b.y + fs * 0.35, fs, "#1a1a26", "center", 700);
+    }
+  }
+}
+
+function drawButton(btn) {
+  const fill = btn.selected ? "#5a4a1c" : btn.enabled ? (btn.big ? "#3b6fe0" : "#2c3140") : "#20232d";
+  ctx.fillStyle = fill;
+  ctx.beginPath(); ctx.roundRect(btn.x, btn.y, btn.w, btn.h, 8); ctx.fill();
+  if (btn.selected) { ctx.strokeStyle = "#ffd966"; ctx.lineWidth = 3; ctx.stroke(); }
+  const col = btn.enabled ? "#ffffff" : "rgba(255,255,255,0.35)";
+  if (btn.gate) {
+    const r = { x: btn.x + 10, y: btn.y + 10, w: btn.w - 20, h: 40 };
+    drawGateBox(r, btn.gate, { dim: !btn.enabled });
+    text(btn.text, btn.x + btn.w / 2, btn.y + 76, 18, col, "center", 700);
+    if (btn.sub) text(btn.sub, btn.x + btn.w / 2, btn.y + 100, 16, col, "center");
+  } else if (btn.big) {
+    text(btn.text, btn.x + btn.w / 2, btn.y + btn.h / 2 + 10, 28, col, "center", 700);
+  } else if (btn.sub) {
+    text(btn.text, btn.x + btn.w / 2, btn.y + btn.h / 2 - 4, 20, col, "center", 700);
+    text(btn.sub, btn.x + btn.w / 2, btn.y + btn.h / 2 + 20, 17, col, "center");
+  } else {
+    text(btn.text, btn.x + btn.w / 2, btn.y + btn.h / 2 + 7, 20, col, "center", 700);
+  }
+}
+
+function drawPanelBg() {
+  ctx.fillStyle = "#1b1e28";
+  ctx.fillRect(0, PANEL_Y, W, H - PANEL_Y);
+}
+
+// --- 入力とループ ---
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const stage = document.getElementById("stage");
+  const availW = stage.clientWidth;
+  const availH = stage.clientHeight || window.innerHeight;
+  const cssW = Math.min(availW, availH * W / H);
+  const cssH = cssW * H / W;
+  canvas.style.width = cssW + "px";
+  canvas.style.height = cssH + "px";
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  scale = canvas.width / W;
+}
+
+function run(game) {
+  let draggingCup = false;
+  const B = () => game.board;
+  const toVirtual = e => {
+    const r = canvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height };
+  };
+  const moveCup = x => {
+    B().cupX = Math.min(Math.max(x, BOARD_L + 30), BOARD_R - 30);
+    B().cupHeldUntil = B().t + 3;
+  };
+
+  canvas.addEventListener("pointerdown", e => {
+    const p = toVirtual(e);
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* 合成イベントでは捕まえられないことがある */ }
+    if (p.y > CUP_STRIP_TOP && p.y < CUP_STRIP_BOTTOM) { draggingCup = true; moveCup(p.x); return; }
+    for (const btn of game.buttons()) {
+      if (inRect(btn, p.x, p.y)) { if (btn.enabled) btn.act(); return; }
+    }
+    for (let i = 0; i < B().slots.length; i++) {
+      if (inRect(slotRect(i), p.x, p.y, 12)) { if (game.onSlot) game.onSlot(i); return; }
+    }
+  });
+  canvas.addEventListener("pointermove", e => { if (draggingCup) moveCup(toVirtual(e).x); });
+  const release = () => { draggingCup = false; };
+  canvas.addEventListener("pointerup", release);
+  canvas.addEventListener("pointercancel", release);
+
+  const draw = () => {
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.fillStyle = "#11131a";
+    ctx.fillRect(0, 0, W, H);
+    game.drawTop();
+    drawBoard(game.board);
+    drawPanelBg();
+    game.drawPanel();
+    for (const btn of game.buttons()) drawButton(btn);
+  };
+  const step = dt => { boardUpdate(game.board, dt); game.update(dt); };
+
+  let last = 0;
+  const frame = t => {
+    const dt = Math.min((t - last) / 1000, 1 / 20);
+    last = t;
+    step(dt);
+    draw();
+    requestAnimationFrame(frame);
+  };
+
+  const start = data => {
+    game.restore(data || {});
+    window.addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(t => { last = t; requestAnimationFrame(frame); });
+  };
+  window.cupDebug = { game, step: dt => { step(dt); draw(); }, newGate, slotRect, boardUpdate };
+  window.claude?.hot?.snapshot?.(() => game.snapshot());
+  if (window.claude?.hot?.ready) window.claude.hot.ready(start);
+  else start(window.claude?.hot?.data ?? {});
+  if (document.fonts) document.fonts.load(`700 20px "Chakra Petch"`).catch(() => {});
+}

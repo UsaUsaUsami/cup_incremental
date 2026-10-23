@@ -4,3 +4,4 @@ snapshots/2*.gif
 research/*/sources/
 research/*/report.html
 web/_preview.html
+web/_preview-*.html
