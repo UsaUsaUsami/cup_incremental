@@ -3,24 +3,29 @@ extends Node2D
 ## 1ラウンドで注げる玉は決まった数。勝てばショップでゲートを買って並べ替え、負けたら最初から。
 ## ゲートは 1ラウンドに働く回数が決まっていて、使い切ると玉は何も起きずに素通りする。
 ## 玉は価値が大きいほど大きく描き、画面の玉が多いときの ×2 は分裂でなく中の数字の倍化になる。
+## PC 向けの横長（1920×1080）: 左に敵と状況、中央に盤面、右にショップ。カップはマウスに追従する。
 
-const W := 720.0
-const BOARD_L := 40.0
-const BOARD_R := 680.0
+const W := 1920.0
+const H := 1080.0
+const BOARD_L := 560.0
+const BOARD_R := 1360.0
+const BOARD_TOP := 110.0
 const COLS := 4
-const ROW_YS: Array[float] = [340.0, 510.0, 680.0]
-const GATE_W := 130.0
-const GATE_H := 44.0
-const CUP_Y := 175.0
-const CUP_STRIP_TOP := 120.0
-const CUP_STRIP_BOTTOM := 250.0
-const COLLECT_Y := 860.0
-const BALL_R := 7.0
-const BALL_R_MAX := 26.0
+const ROW_YS: Array[float] = [360.0, 560.0, 760.0]
+const GATE_W := 160.0
+const GATE_H := 52.0
+const CUP_Y := 190.0
+const COLLECT_Y := 930.0
+const BALL_R := 8.0
+const BALL_R_MAX := 30.0
 const BALL_CAP := 80  # 画面に出す玉の上限。超えたら ×2 は分裂でなく価値の倍化になる
-const GRAVITY := 900.0
+const GRAVITY := 1000.0
 const POUR_RATE := 6.0
-const GUN_POS := Vector2(360.0, 875.0)
+const GUN_POS := Vector2(960.0, 1010.0)
+const HP_BAR := Rect2(560.0, 48.0, 800.0, 26.0)
+const LEFT_X := 60.0
+const RIGHT_X := 1460.0
+const RIGHT_W := 400.0
 const FIRE_TIME := 2.5  # 弾倉を撃ち切るまでの秒数（弾の数によらず一定）
 const BULLET_RATE := 45.0  # 見た目の弾を 1秒に出す数
 const BULLET_SPEED := 2600.0
@@ -54,8 +59,7 @@ var selected := ""
 var ball_level := 0
 var use_level := 0
 var pour_acc := 0.0
-var cup_x := W / 2.0
-var dragging_cup := false
+var cup_x := (BOARD_L + BOARD_R) / 2.0
 var time := 0.0
 var demo := false
 
@@ -277,7 +281,7 @@ func _apply_gate(ball: Dictionary, gate: Dictionary) -> void:
 func _process(delta: float) -> void:
 	time += delta
 	if demo:
-		cup_x = W / 2.0 + sin(time * 1.3) * 250.0
+		cup_x = (BOARD_L + BOARD_R) / 2.0 + sin(time * 1.3) * 320.0
 
 	if state == "play":
 		pour_acc += POUR_RATE * delta
@@ -349,7 +353,7 @@ func _update_bullets(delta: float) -> void:
 	for i in range(bullets.size() - 1, -1, -1):
 		var bl := bullets[i]
 		bl["p"] += bl["v"] * delta
-		if bl["p"].y < 70.0:
+		if bl["p"].y < HP_BAR.end.y:
 			bullets.remove_at(i)
 
 
@@ -360,20 +364,16 @@ func ball_radius(val: float) -> float:
 # --- 入力 ---
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed:
-			if event.position.y > CUP_STRIP_TOP and event.position.y < CUP_STRIP_BOTTOM:
-				dragging_cup = true
-				_move_cup(event.position.x)
-			elif state == "shop":
-				for idx in slots.size():
-					if slot_rect(idx).grow(12.0).has_point(event.position):
-						_tap_slot(idx)
-						break
-		else:
-			dragging_cup = false
-	elif event is InputEventMouseMotion and dragging_cup:
-		_move_cup(event.position.x)
+	# カップは盤面の上にあるマウスの横位置に追従する。デモ中はマウスを無視する
+	if event is InputEventMouseMotion and not demo:
+		if event.position.x > BOARD_L - 40.0 and event.position.x < BOARD_R + 40.0:
+			_move_cup(event.position.x)
+	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		if state == "shop":
+			for idx in slots.size():
+				if slot_rect(idx).grow(12.0).has_point(event.position):
+					_tap_slot(idx)
+					break
 
 
 func _move_cup(x: float) -> void:
@@ -386,54 +386,69 @@ func _build_ui() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
 
+	# 左: 敵と状況
+	var left := VBoxContainer.new()
+	left.position = Vector2(LEFT_X, 60)
+	left.custom_minimum_size = Vector2(420, 0)
+	left.add_theme_constant_override("separation", 14)
+	layer.add_child(left)
+
 	var head := Label.new()
-	head.position = Vector2(20, 10)
-	head.add_theme_font_size_override("font_size", 30)
-	layer.add_child(head)
+	head.add_theme_font_size_override("font_size", 44)
+	left.add_child(head)
 	ui["head"] = head
 
+	var hp := Label.new()
+	hp.add_theme_font_size_override("font_size", 30)
+	hp.modulate = Color(1.0, 0.6, 0.55)
+	left.add_child(hp)
+	ui["hp"] = hp
+
 	var sub := Label.new()
-	sub.position = Vector2(20, 82)
-	sub.add_theme_font_size_override("font_size", 20)
-	sub.modulate = Color(1, 1, 1, 0.75)
-	layer.add_child(sub)
+	sub.add_theme_font_size_override("font_size", 24)
+	sub.modulate = Color(1, 1, 1, 0.8)
+	left.add_child(sub)
 	ui["sub"] = sub
 
+	var msg := Label.new()
+	msg.add_theme_font_size_override("font_size", 24)
+	msg.custom_minimum_size = Vector2(420, 0)
+	msg.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
+	left.add_child(msg)
+	ui["msg"] = msg
+
+	# 右: ショップ
 	var panel := PanelContainer.new()
-	panel.position = Vector2(0, 905)
-	panel.size = Vector2(720, 375)
+	panel.position = Vector2(RIGHT_X, 60)
+	panel.custom_minimum_size = Vector2(RIGHT_W, 960)
 	layer.add_child(panel)
 
 	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 10)
+	vb.add_theme_constant_override("separation", 12)
 	panel.add_child(vb)
 
-	var msg := Label.new()
-	msg.add_theme_font_size_override("font_size", 22)
-	msg.custom_minimum_size = Vector2(700, 0)
-	msg.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
-	vb.add_child(msg)
-	ui["msg"] = msg
-
-	var grid := GridContainer.new()
-	grid.columns = 3
-	grid.add_theme_constant_override("h_separation", 8)
-	grid.add_theme_constant_override("v_separation", 8)
-	vb.add_child(grid)
+	var title := Label.new()
+	title.text = "ショップ"
+	title.add_theme_font_size_override("font_size", 32)
+	vb.add_child(title)
 
 	for t in GATE_DEFS:
-		ui["buy_" + t] = _make_button(grid, _buy_gate.bind(t), Vector2(230, 64))
-	ui["balls"] = _make_button(grid, _buy_balls, Vector2(230, 64))
-	ui["uses"] = _make_button(grid, _buy_uses, Vector2(230, 64))
+		ui["buy_" + t] = _make_button(vb, _buy_gate.bind(t), Vector2(RIGHT_W, 84))
+	ui["balls"] = _make_button(vb, _buy_balls, Vector2(RIGHT_W, 84))
+	ui["uses"] = _make_button(vb, _buy_uses, Vector2(RIGHT_W, 84))
 
-	ui["action"] = _make_button(vb, _on_action, Vector2(700, 80))
-	ui["action"].add_theme_font_size_override("font_size", 28)
+	var spacer := Control.new()
+	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vb.add_child(spacer)
+
+	ui["action"] = _make_button(vb, _on_action, Vector2(RIGHT_W, 110))
+	ui["action"].add_theme_font_size_override("font_size", 30)
 
 
 func _make_button(parent: Control, cb: Callable, min_size: Vector2) -> Button:
 	var btn := Button.new()
 	btn.custom_minimum_size = min_size
-	btn.add_theme_font_size_override("font_size", 20)
+	btn.add_theme_font_size_override("font_size", 26)
 	btn.focus_mode = Control.FOCUS_NONE
 	btn.pressed.connect(cb)
 	parent.add_child(btn)
@@ -465,21 +480,22 @@ func _buy_uses() -> void:
 
 
 func _update_ui() -> void:
-	ui["head"].text = "ラウンド %d   敵 HP %s / %s" % [round_no, fmt(maxf(enemy_hp, 0.0)), fmt(enemy_hp_max)]
-	ui["sub"].text = "コイン %s   残りの玉 %d / %d   ゲート回数 %d" % [
+	ui["head"].text = "ラウンド %d" % round_no
+	ui["hp"].text = "敵 HP %s / %s" % [fmt(maxf(enemy_hp, 0.0)), fmt(enemy_hp_max)]
+	ui["sub"].text = "コイン %s\n残りの玉 %d / %d\nゲート回数 %d" % [
 		fmt(coins), balls_left if state == "play" else balls_per_round(), balls_per_round(), gate_uses()]
 
 	var held := []
 	for t in GATE_DEFS:
-		held.append("%s×%d" % [GATE_DEFS[t]["label"], inventory[t]])
+		held.append("%s ×%d" % [GATE_DEFS[t]["label"], inventory[t]])
 	match state:
 		"shop":
-			var won := "勝利！ +%s コイン\n" % fmt(last_reward) if last_reward > 0.0 else ""
-			ui["msg"].text = "%s置く: %s   手持ち %s（空きマスをタップで置く／タップで回収）" % [
-				won, GATE_DEFS[selected]["label"] if selected != "" else "なし", "  ".join(held)]
-			ui["action"].text = "ラウンド %d 開始（敵 HP %s）" % [round_no, fmt(enemy_hp_max)]
+			var won := "勝利！ +%s コイン\n\n" % fmt(last_reward) if last_reward > 0.0 else ""
+			ui["msg"].text = "%s置くゲート: %s\n手持ち: %s\n\n空きマスをクリックで置く／置いたゲートをクリックで回収" % [
+				won, GATE_DEFS[selected]["label"] if selected != "" else "なし", "   ".join(held)]
+			ui["action"].text = "ラウンド %d 開始\n敵 HP %s" % [round_no, fmt(enemy_hp_max)]
 		"play":
-			ui["msg"].text = "上の帯をドラッグしてカップを動かす"
+			ui["msg"].text = "マウスを左右に動かしてカップで狙う"
 			ui["action"].text = "注いでいる…"
 		"fire":
 			ui["msg"].text = "発射！ 残弾 %s" % fmt(ammo_left())
@@ -492,11 +508,11 @@ func _update_ui() -> void:
 	var in_shop := state == "shop"
 	for t in GATE_DEFS:
 		var btn: Button = ui["buy_" + t]
-		btn.text = "%s を買う\n%s" % [GATE_DEFS[t]["name"], fmt(gate_cost(t))]
+		btn.text = "%s ゲートを買う   %s" % [GATE_DEFS[t]["name"], fmt(gate_cost(t))]
 		btn.disabled = not in_shop or coins < gate_cost(t)
-	ui["balls"].text = "玉 +5\n%s" % fmt(ball_cost())
+	ui["balls"].text = "玉 +5   %s" % fmt(ball_cost())
 	ui["balls"].disabled = not in_shop or coins < ball_cost()
-	ui["uses"].text = "ゲート回数 +2\n%s" % fmt(use_cost())
+	ui["uses"].text = "ゲート回数 +2   %s" % fmt(use_cost())
 	ui["uses"].disabled = not in_shop or coins < use_cost()
 
 
@@ -505,18 +521,16 @@ func _update_ui() -> void:
 func _draw() -> void:
 	# 敵の HP バー
 	var shake := Vector2(randf_range(-hit_shake, hit_shake), randf_range(-hit_shake, hit_shake))
-	var hp_bar := Rect2(Vector2(20, 56) + shake, Vector2(W - 40, 18))
+	var hp_bar := Rect2(HP_BAR.position + shake, HP_BAR.size)
 	draw_rect(hp_bar, Color(1, 1, 1, 0.12))
 	var ratio := clampf(enemy_hp / enemy_hp_max, 0.0, 1.0) if enemy_hp_max > 0.0 else 0.0
 	draw_rect(Rect2(hp_bar.position, Vector2(hp_bar.size.x * ratio, hp_bar.size.y)), Color(0.9, 0.3, 0.3))
 
-	# カップを動かす帯
-	draw_rect(Rect2(BOARD_L, CUP_STRIP_TOP, BOARD_R - BOARD_L, CUP_STRIP_BOTTOM - CUP_STRIP_TOP), Color(1, 1, 1, 0.04))
-	draw_string(font, Vector2(BOARD_L + 8, CUP_STRIP_BOTTOM - 10), "ここをドラッグでカップを動かす",
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1, 0.35))
+	# 盤面の地
+	draw_rect(Rect2(BOARD_L, BOARD_TOP, BOARD_R - BOARD_L, COLLECT_Y - BOARD_TOP), Color(1, 1, 1, 0.03))
 	var cup := PackedVector2Array([
-		Vector2(cup_x - 40, CUP_Y - 30), Vector2(cup_x + 40, CUP_Y - 30),
-		Vector2(cup_x + 28, CUP_Y + 30), Vector2(cup_x - 28, CUP_Y + 30)])
+		Vector2(cup_x - 48, CUP_Y - 36), Vector2(cup_x + 48, CUP_Y - 36),
+		Vector2(cup_x + 34, CUP_Y + 36), Vector2(cup_x - 34, CUP_Y + 36)])
 	draw_colored_polygon(cup, Color(0.95, 0.85, 0.55))
 
 	for idx in slots.size():
@@ -524,8 +538,8 @@ func _draw() -> void:
 		var gate = slots[idx]
 		if gate == null:
 			draw_rect(r, Color(1, 1, 1, 0.18), false, 2.0)
-			draw_string(font, Vector2(r.position.x, r.get_center().y + 7), "空き",
-				HORIZONTAL_ALIGNMENT_CENTER, r.size.x, 20, Color(1, 1, 1, 0.3))
+			draw_string(font, Vector2(r.position.x, r.get_center().y + 8), "空き",
+				HORIZONTAL_ALIGNMENT_CENTER, r.size.x, 22, Color(1, 1, 1, 0.3))
 			continue
 		var col: Color = GATE_DEFS[gate["type"]]["color"]
 		if gate["uses"] <= 0 or gate["block"] > 0.0:
@@ -533,15 +547,15 @@ func _draw() -> void:
 		elif gate["flash"] > 0.0:
 			col = col.lightened(0.35)
 		draw_rect(r, col)
-		draw_string(font, Vector2(r.position.x, r.get_center().y + 11), GATE_DEFS[gate["type"]]["label"],
-			HORIZONTAL_ALIGNMENT_CENTER, r.size.x, 30, Color.WHITE)
-		draw_string(font, Vector2(r.position.x, r.end.y + 22), "残り %d" % gate["uses"],
-			HORIZONTAL_ALIGNMENT_CENTER, r.size.x, 16, Color(1, 1, 1, 0.6))
+		draw_string(font, Vector2(r.position.x, r.get_center().y + 13), GATE_DEFS[gate["type"]]["label"],
+			HORIZONTAL_ALIGNMENT_CENTER, r.size.x, 36, Color.WHITE)
+		draw_string(font, Vector2(r.position.x, r.end.y + 26), "残り %d" % gate["uses"],
+			HORIZONTAL_ALIGNMENT_CENTER, r.size.x, 20, Color(1, 1, 1, 0.6))
 
 	# 弾倉（回収口）とミニガン
-	draw_rect(Rect2(BOARD_L, COLLECT_Y, BOARD_R - BOARD_L, 30), Color(0.9, 0.3, 0.3, 0.35))
-	draw_string(font, Vector2(BOARD_L + 10, COLLECT_Y + 23), "弾倉 %s" % fmt(ammo_left()),
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color.WHITE)
+	draw_rect(Rect2(BOARD_L, COLLECT_Y, BOARD_R - BOARD_L, 34), Color(0.9, 0.3, 0.3, 0.35))
+	draw_string(font, Vector2(BOARD_L + 12, COLLECT_Y + 26), "弾倉 %s" % fmt(ammo_left()),
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 24, Color.WHITE)
 	_draw_gun()
 
 	for bl in bullets:
@@ -562,14 +576,14 @@ func _draw() -> void:
 
 func _draw_gun() -> void:
 	# 銃身を回して見せる: 3本の線の横位置を回転角でずらす
-	var base := Rect2(GUN_POS + Vector2(-34, -6), Vector2(68, 26))
+	var base := Rect2(GUN_POS + Vector2(-44, 0), Vector2(88, 40))
 	draw_rect(base, Color(0.35, 0.37, 0.42))
 	for k in 3:
-		var off := sin(gun_spin + k * TAU / 3.0) * 9.0
+		var off := sin(gun_spin + k * TAU / 3.0) * 12.0
 		var x := GUN_POS.x + off
-		draw_line(Vector2(x, GUN_POS.y - 6), Vector2(x, GUN_POS.y - 46), Color(0.6, 0.62, 0.68), 5.0)
+		draw_line(Vector2(x, GUN_POS.y), Vector2(x, GUN_POS.y - 40), Color(0.6, 0.62, 0.68), 6.0)
 	if state == "fire":
-		draw_circle(GUN_POS + Vector2(0, -52), randf_range(8.0, 14.0), Color(1.0, 0.8, 0.3, 0.9))
+		draw_circle(GUN_POS + Vector2(0, -48), randf_range(10.0, 18.0), Color(1.0, 0.8, 0.3, 0.9))
 
 
 func _save_shot() -> void:

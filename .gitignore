@@ -3,3 +3,4 @@ snapshots/2*.gif
 # 調査の原文は他人の記事の写しなので、手元にだけ置く
 research/*/sources/
 research/*/report.html
+web/_preview.html

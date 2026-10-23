@@ -41,7 +41,7 @@ def main() -> None:
         files = sorted(glob.glob(os.path.join(frames_dir, "frame_*.png")))
         if not files:
             sys.exit("フレームが撮れていない")
-        frames = [Image.open(f).convert("RGB").resize((360, 640)) for f in files]
+        frames = [Image.open(f).convert("RGB").resize((640, 360)) for f in files]
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         gif = os.path.join(OUT, "latest.gif")
         frames[0].save(gif, save_all=True, append_images=frames[1:], duration=100, loop=0, optimize=True)

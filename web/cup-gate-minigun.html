@@ -1,0 +1,483 @@
+<title>Cup Gate Minigun</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&display=swap">
+<style>
+  /* 単一の暗いテーマ（ゲーム画面）。720x1280 の仮想画面を画面に収まるよう拡大縮小する */
+  :root {
+    --bg: #11131a;
+    --frame: #0b0c11;
+    --ink: #eef0f6;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    background: var(--frame);
+    color: var(--ink);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 0;
+    box-sizing: border-box;
+  }
+  .stage {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+  }
+  canvas {
+    display: block;
+    background: var(--bg);
+    touch-action: none;
+    border-radius: 10px;
+    max-width: 100%;
+  }
+</style>
+<div class="stage" id="stage"><canvas id="game" aria-label="カップから玉を注いでゲートで増やし、ミニガンで敵を倒すゲーム"></canvas></div>
+<script>
+(() => {
+  // 試作 第2版の移植: 玉の価値を弾倉に溜め、最後にミニガンで敵の HP を削る
+  const W = 720, H = 1280;
+  const BOARD_L = 40, BOARD_R = 680, COLS = 4;
+  const ROW_YS = [340, 510, 680];
+  const GATE_W = 130, GATE_H = 44;
+  const CUP_Y = 175, CUP_STRIP_TOP = 120, CUP_STRIP_BOTTOM = 250;
+  const COLLECT_Y = 860;
+  const BALL_R = 7, BALL_R_MAX = 26, BALL_CAP = 80;
+  const GRAVITY = 900, POUR_RATE = 6;
+  const GUN = { x: 360, y: 875 };
+  const FIRE_TIME = 2.5, BULLET_RATE = 45, BULLET_SPEED = 2600;
+  const SUFFIX = ["", "K", "M", "B", "T", "Qa", "Qi"];
+  const HUD = '"Chakra Petch", "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", system-ui, sans-serif';
+
+  const GATE_DEFS = {
+    add: { label: "+3", baseCost: 6, color: [0.35, 0.75, 0.45] },
+    mul: { label: "×2", baseCost: 14, color: [0.35, 0.55, 0.9] },
+    sq:  { label: "x²", baseCost: 30, color: [0.85, 0.45, 0.8] },
+  };
+  const TYPES = Object.keys(GATE_DEFS);
+
+  let S; // ゲームの状態（保存して戻せるものだけ）
+  let balls = [], bullets = [];
+  let pourAcc = 0, fireT = 0, fireHpStart = 0, bulletAcc = 0, gunSpin = 0, hitShake = 0;
+  let cupX = W / 2, draggingCup = false;
+
+  function newRun() {
+    return {
+      state: "shop", round: 1, coins: 10, lastReward: 0, ballLevel: 0, useLevel: 0,
+      enemyHp: hpFor(1), enemyHpMax: hpFor(1), ballsLeft: 0, ammo: 0,
+      slots: Array(COLS * ROW_YS.length).fill(null),
+      inventory: { add: 1, mul: 0, sq: 0 }, bought: { add: 0, mul: 0, sq: 0 }, selected: "add",
+    };
+  }
+
+  // --- 数値 ---
+  const hpFor = r => Math.round(30 * Math.pow(1.55, r - 1));
+  const rewardFor = r => 8 + 4 * r;
+  const ballsPerRound = () => 20 + S.ballLevel * 5;
+  const gateUses = () => 8 + S.useLevel * 2;
+  const gateCost = t => Math.round(GATE_DEFS[t].baseCost * Math.pow(1.25, S.bought[t]));
+  const ballCost = () => Math.round(12 * Math.pow(1.6, S.ballLevel));
+  const useCost = () => Math.round(10 * Math.pow(1.6, S.useLevel));
+  const ballRadius = v => Math.min(BALL_R + 4 * Math.log10(Math.max(v, 1)), BALL_R_MAX);
+
+  function fmt(x) {
+    if (x < 1000) return Math.floor(x).toString();
+    const e = Math.floor(Math.log(x) / Math.log(1000));
+    if (e < SUFFIX.length) return (x / Math.pow(1000, e)).toFixed(2) + SUFFIX[e];
+    const e10 = Math.floor(Math.log10(x));
+    return (x / Math.pow(10, e10)).toFixed(2) + "e" + e10;
+  }
+
+  // --- ラウンドの流れ ---
+  function startRound() {
+    S.state = "play";
+    S.enemyHpMax = hpFor(S.round);
+    S.enemyHp = S.enemyHpMax;
+    S.ballsLeft = ballsPerRound();
+    S.ammo = 0;
+    pourAcc = 0;
+    for (const g of S.slots) if (g) g.uses = gateUses();
+  }
+
+  function startFire() {
+    S.state = "fire";
+    fireT = 0;
+    fireHpStart = S.enemyHp;
+    bulletAcc = 0;
+  }
+
+  const ammoLeft = () => S.state === "fire" ? Math.max(S.ammo * (1 - fireT / FIRE_TIME), 0) : S.ammo;
+
+  function updateFire(dt) {
+    // 弾倉の中身を FIRE_TIME かけて一定の速さで撃ち出す。敵が倒れたらそこで止める
+    fireT += dt;
+    S.enemyHp = fireHpStart - S.ammo * Math.min(fireT / FIRE_TIME, 1);
+    gunSpin += dt * 40;
+    hitShake = 6;
+    bulletAcc += BULLET_RATE * dt;
+    while (bulletAcc >= 1) {
+      bulletAcc -= 1;
+      const dx = (Math.random() - 0.5) * 0.12, len = Math.hypot(dx, 1);
+      const dir = { x: dx / len, y: -1 / len };
+      bullets.push({ x: GUN.x + dir.x * 40, y: GUN.y + dir.y * 40, vx: dir.x * BULLET_SPEED, vy: dir.y * BULLET_SPEED });
+    }
+    if (S.enemyHp <= 0 || fireT >= FIRE_TIME) endRound();
+  }
+
+  function endRound() {
+    S.ammo = 0;
+    if (S.enemyHp <= 0) {
+      S.lastReward = rewardFor(S.round);
+      S.coins += S.lastReward;
+      S.round += 1;
+      S.enemyHpMax = hpFor(S.round);
+      S.enemyHp = S.enemyHpMax;
+      S.state = "shop";
+    } else {
+      S.state = "over";
+    }
+  }
+
+  function onAction() {
+    if (S.state === "shop") startRound();
+    else if (S.state === "over") { S = newRun(); balls = []; }
+  }
+
+  // --- 盤面 ---
+  function slotRect(i) {
+    const col = i % COLS, row = Math.floor(i / COLS);
+    const colW = (BOARD_R - BOARD_L) / COLS;
+    const cx = BOARD_L + (col + 0.5) * colW;
+    return { x: cx - GATE_W / 2, y: ROW_YS[row] - GATE_H / 2, w: GATE_W, h: GATE_H };
+  }
+  const inRect = (r, x, y, pad = 0) => x >= r.x - pad && x <= r.x + r.w + pad && y >= r.y - pad && y <= r.y + r.h + pad;
+  const place = (i, t) => { S.slots[i] = { type: t, uses: gateUses(), flash: 0, block: 0 }; };
+
+  function tapSlot(i) {
+    const g = S.slots[i];
+    if (g) {
+      S.inventory[g.type] += 1;
+      S.slots[i] = null;
+      S.selected = g.type;
+    } else if (S.selected && S.inventory[S.selected] > 0) {
+      place(i, S.selected);
+      S.inventory[S.selected] -= 1;
+    }
+  }
+
+  function applyGate(b, g) {
+    if (g.uses <= 0) { g.block = 0.2; return; }
+    g.uses -= 1;
+    g.flash = 0.15;
+    if (g.type === "add") b.val += 3;
+    else if (g.type === "sq") b.val = b.val * b.val;
+    else if (g.type === "mul") {
+      if (balls.length < BALL_CAP) {
+        const spread = 60 + Math.random() * 60;
+        balls.push({ x: b.x, y: b.y, vx: b.vx - spread, vy: b.vy, val: b.val, passed: new Set(b.passed) });
+        b.vx += 60 + Math.random() * 60;
+      } else {
+        b.val *= 2;
+      }
+    }
+  }
+
+  // --- 毎フレーム ---
+  function update(dt) {
+    if (S.state === "play") {
+      pourAcc += POUR_RATE * dt;
+      while (pourAcc >= 1 && S.ballsLeft > 0) {
+        pourAcc -= 1;
+        S.ballsLeft -= 1;
+        balls.push({ x: cupX + (Math.random() - 0.5) * 20, y: CUP_Y + 30, vx: (Math.random() - 0.5) * 60, vy: 60, val: 1, passed: new Set() });
+      }
+    }
+    for (const g of S.slots) {
+      if (!g) continue;
+      g.flash = Math.max(0, g.flash - dt);
+      g.block = Math.max(0, g.block - dt);
+    }
+
+    const colW = (BOARD_R - BOARD_L) / COLS;
+    for (let i = balls.length - 1; i >= 0; i--) {
+      const b = balls[i];
+      b.vy += GRAVITY * dt;
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      const r = ballRadius(b.val);
+      if (b.x < BOARD_L + r) { b.x = BOARD_L + r; b.vx = Math.abs(b.vx) * 0.6; }
+      else if (b.x > BOARD_R - r) { b.x = BOARD_R - r; b.vx = -Math.abs(b.vx) * 0.6; }
+      for (let row = 0; row < ROW_YS.length; row++) {
+        if (Math.abs(b.y - ROW_YS[row]) > GATE_H / 2) continue;
+        const col = Math.min(Math.max(Math.floor((b.x - BOARD_L) / colW), 0), COLS - 1);
+        const idx = row * COLS + col;
+        const g = S.slots[idx];
+        if (g && !b.passed.has(idx) && inRect(slotRect(idx), b.x, b.y)) {
+          b.passed.add(idx);
+          applyGate(b, g);
+        }
+      }
+      if (b.y >= COLLECT_Y) {
+        S.ammo += b.val;
+        balls.splice(i, 1);
+      }
+    }
+
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      const bl = bullets[i];
+      bl.x += bl.vx * dt;
+      bl.y += bl.vy * dt;
+      if (bl.y < 70) bullets.splice(i, 1);
+    }
+    hitShake = Math.max(0, hitShake - dt * 30);
+
+    if (S.state === "play" && S.ballsLeft === 0 && balls.length === 0) startFire();
+    else if (S.state === "fire") updateFire(dt);
+  }
+
+  // --- ボタン（キャンバスに描いて当たり判定する）---
+  function buttons() {
+    const inShop = S.state === "shop";
+    const list = [];
+    const bw = 228, bh = 64, gap = 8, x0 = 12, y0 = 1010;
+    const cells = [
+      ...TYPES.map(t => ({ label: `${GATE_DEFS[t].label} を買う`, cost: gateCost(t), act: () => buyGate(t) })),
+      { label: "玉 +5", cost: ballCost(), act: () => buy(ballCost(), () => S.ballLevel++) },
+      { label: "ゲート回数 +2", cost: useCost(), act: () => buy(useCost(), () => S.useLevel++) },
+    ];
+    cells.forEach((c, i) => {
+      const col = i % 3, row = Math.floor(i / 3);
+      list.push({ x: x0 + col * (bw + gap), y: y0 + row * (bh + gap), w: bw, h: bh,
+        text: c.label, sub: fmt(c.cost), enabled: inShop && S.coins >= c.cost, act: c.act });
+    });
+    const actionText = { shop: `ラウンド ${S.round} 開始（敵 HP ${fmt(S.enemyHpMax)}）`,
+      play: "注いでいる…", fire: "撃っている…", over: "最初から" }[S.state];
+    list.push({ x: 12, y: 1160, w: 696, h: 84, text: actionText, enabled: S.state === "shop" || S.state === "over",
+      act: onAction, big: true });
+    return list;
+  }
+
+  function buyGate(t) {
+    buy(gateCost(t), () => { S.bought[t] += 1; S.inventory[t] += 1; S.selected = t; });
+  }
+  function buy(cost, fn) {
+    if (S.state !== "shop" || S.coins < cost) return;
+    S.coins -= cost;
+    fn();
+  }
+
+  // --- 描画 ---
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  let scale = 1;
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const stage = document.getElementById("stage");
+    const availW = stage.clientWidth;
+    const availH = stage.clientHeight || window.innerHeight;
+    const cssW = Math.min(availW, availH * W / H);
+    const cssH = cssW * H / W;
+    canvas.style.width = cssW + "px";
+    canvas.style.height = cssH + "px";
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    scale = canvas.width / W;
+  }
+
+  const rgb = (c, a = 1) => `rgba(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)},${a})`;
+  const mix = (c, t, k) => c.map((v, i) => v + (t[i] - v) * k);
+  function hsv(h, s, v) {
+    const i = Math.floor(h * 6), f = h * 6 - i, p = v * (1 - s), q = v * (1 - f * s), u = v * (1 - (1 - f) * s);
+    return [[v, u, p], [q, v, p], [p, v, u], [p, q, v], [u, p, v], [v, p, q]][i % 6];
+  }
+
+  function text(str, x, y, size, color, align = "left", weight = 500) {
+    ctx.font = `${weight} ${size}px ${HUD}`;
+    ctx.fillStyle = color;
+    ctx.textAlign = align;
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(str, x, y);
+  }
+
+  function wrapLines(str, maxW, size) {
+    ctx.font = `500 ${size}px ${HUD}`;
+    const out = [];
+    for (const para of str.split("\n")) {
+      let line = "";
+      for (const ch of para) {
+        if (ctx.measureText(line + ch).width > maxW && line) { out.push(line); line = ch; }
+        else line += ch;
+      }
+      out.push(line);
+    }
+    return out;
+  }
+
+  function draw() {
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.fillStyle = "#11131a";
+    ctx.fillRect(0, 0, W, H);
+
+    // 見出しと敵の HP
+    text(`ラウンド ${S.round}   敵 HP ${fmt(Math.max(S.enemyHp, 0))} / ${fmt(S.enemyHpMax)}`, 20, 44, 30, "#eef0f6", "left", 700);
+    const sx = (Math.random() - 0.5) * 2 * hitShake, sy = (Math.random() - 0.5) * 2 * hitShake;
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    ctx.fillRect(20 + sx, 56 + sy, W - 40, 18);
+    const ratio = S.enemyHpMax > 0 ? Math.min(Math.max(S.enemyHp / S.enemyHpMax, 0), 1) : 0;
+    ctx.fillStyle = "#e5504d";
+    ctx.fillRect(20 + sx, 56 + sy, (W - 40) * ratio, 18);
+    const shown = S.state === "play" ? S.ballsLeft : ballsPerRound();
+    text(`コイン ${fmt(S.coins)}   残りの玉 ${shown} / ${ballsPerRound()}   ゲート回数 ${gateUses()}`, 20, 102, 20, "rgba(238,240,246,0.75)");
+
+    // カップを動かす帯
+    ctx.fillStyle = "rgba(255,255,255,0.04)";
+    ctx.fillRect(BOARD_L, CUP_STRIP_TOP, BOARD_R - BOARD_L, CUP_STRIP_BOTTOM - CUP_STRIP_TOP);
+    text("ここをドラッグでカップを動かす", BOARD_L + 8, CUP_STRIP_BOTTOM - 10, 16, "rgba(255,255,255,0.35)");
+    ctx.fillStyle = "#f2d98c";
+    ctx.beginPath();
+    ctx.moveTo(cupX - 40, CUP_Y - 30); ctx.lineTo(cupX + 40, CUP_Y - 30);
+    ctx.lineTo(cupX + 28, CUP_Y + 30); ctx.lineTo(cupX - 28, CUP_Y + 30);
+    ctx.closePath(); ctx.fill();
+
+    // ゲート
+    S.slots.forEach((g, i) => {
+      const r = slotRect(i);
+      if (!g) {
+        ctx.strokeStyle = "rgba(255,255,255,0.18)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(r.x, r.y, r.w, r.h);
+        text("空き", r.x + r.w / 2, r.y + r.h / 2 + 7, 20, "rgba(255,255,255,0.3)", "center");
+        return;
+      }
+      let c = GATE_DEFS[g.type].color;
+      if (g.uses <= 0 || g.block > 0) c = c.map(v => v * 0.4);
+      else if (g.flash > 0) c = mix(c, [1, 1, 1], 0.35);
+      ctx.fillStyle = rgb(c);
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      text(GATE_DEFS[g.type].label, r.x + r.w / 2, r.y + r.h / 2 + 11, 30, "#fff", "center", 700);
+      text(`残り ${g.uses}`, r.x + r.w / 2, r.y + r.h + 22, 16, "rgba(255,255,255,0.6)", "center");
+    });
+
+    // 弾倉とミニガン
+    ctx.fillStyle = "rgba(229,80,77,0.35)";
+    ctx.fillRect(BOARD_L, COLLECT_Y, BOARD_R - BOARD_L, 30);
+    text(`弾倉 ${fmt(ammoLeft())}`, BOARD_L + 10, COLLECT_Y + 23, 20, "#fff", "left", 700);
+    ctx.fillStyle = "#595e6b";
+    ctx.fillRect(GUN.x - 34, GUN.y - 6, 68, 26);
+    ctx.strokeStyle = "#9a9eab";
+    ctx.lineWidth = 5;
+    for (let k = 0; k < 3; k++) {
+      const x = GUN.x + Math.sin(gunSpin + k * Math.PI * 2 / 3) * 9;
+      ctx.beginPath(); ctx.moveTo(x, GUN.y - 6); ctx.lineTo(x, GUN.y - 46); ctx.stroke();
+    }
+    if (S.state === "fire") {
+      ctx.fillStyle = "rgba(255,204,77,0.9)";
+      ctx.beginPath(); ctx.arc(GUN.x, GUN.y - 52, 8 + Math.random() * 6, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.strokeStyle = "#ffd966";
+    ctx.lineWidth = 3;
+    for (const bl of bullets) {
+      const len = Math.hypot(bl.vx, bl.vy);
+      ctx.beginPath(); ctx.moveTo(bl.x - bl.vx / len * 26, bl.y - bl.vy / len * 26); ctx.lineTo(bl.x, bl.y); ctx.stroke();
+    }
+
+    // 玉
+    for (const b of balls) {
+      const mag = Math.log10(Math.max(b.val, 1));
+      const r = ballRadius(b.val);
+      ctx.fillStyle = rgb(hsv((0.12 + mag * 0.11) % 1, 0.65, 1));
+      ctx.beginPath(); ctx.arc(b.x, b.y, r, 0, Math.PI * 2); ctx.fill();
+      if (b.val >= 2) {
+        const fs = Math.round(Math.min(Math.max(r * 0.9, 9), 22));
+        text(fmt(b.val), b.x, b.y + fs * 0.35, fs, "#1a1a26", "center", 700);
+      }
+    }
+
+    // 下のパネル
+    ctx.fillStyle = "#1b1e28";
+    ctx.fillRect(0, 905, W, H - 905);
+    const held = TYPES.map(t => `${GATE_DEFS[t].label}×${S.inventory[t]}`).join("  ");
+    let msg = "";
+    if (S.state === "shop") {
+      const won = S.lastReward > 0 ? `勝利！ +${fmt(S.lastReward)} コイン\n` : "";
+      msg = `${won}置く: ${S.selected ? GATE_DEFS[S.selected].label : "なし"}   手持ち ${held}\n空きマスをタップで置く／置いたゲートをタップで回収`;
+    } else if (S.state === "play") msg = "上の帯をドラッグしてカップを動かす";
+    else if (S.state === "fire") msg = `発射！ 残弾 ${fmt(ammoLeft())}`;
+    else msg = `敗北… ラウンド ${S.round} で HP が ${fmt(S.enemyHp)} 残った`;
+    wrapLines(msg, W - 32, 22).slice(0, 3).forEach((ln, i) => text(ln, 16, 938 + i * 28, 22, "#eef0f6"));
+
+    for (const btn of buttons()) {
+      ctx.fillStyle = btn.enabled ? (btn.big ? "#3b6fe0" : "#2c3140") : "#20232d";
+      ctx.beginPath(); ctx.roundRect(btn.x, btn.y, btn.w, btn.h, 8); ctx.fill();
+      const col = btn.enabled ? "#ffffff" : "rgba(255,255,255,0.35)";
+      if (btn.big) {
+        text(btn.text, btn.x + btn.w / 2, btn.y + btn.h / 2 + 10, 28, col, "center", 700);
+      } else {
+        text(btn.text, btn.x + btn.w / 2, btn.y + 28, 20, col, "center", 700);
+        text(btn.sub, btn.x + btn.w / 2, btn.y + 54, 18, col, "center");
+      }
+    }
+  }
+
+  // --- 入力 ---
+  function toVirtual(e) {
+    const r = canvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height };
+  }
+  const moveCup = x => { cupX = Math.min(Math.max(x, BOARD_L + 30), BOARD_R - 30); };
+
+  canvas.addEventListener("pointerdown", e => {
+    const p = toVirtual(e);
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* 合成イベントなどで捕まえられないときは無視 */ }
+    if (p.y > CUP_STRIP_TOP && p.y < CUP_STRIP_BOTTOM) {
+      draggingCup = true;
+      moveCup(p.x);
+      return;
+    }
+    for (const btn of buttons()) {
+      if (inRect(btn, p.x, p.y)) { if (btn.enabled) btn.act(); return; }
+    }
+    if (S.state === "shop") {
+      for (let i = 0; i < S.slots.length; i++) {
+        if (inRect(slotRect(i), p.x, p.y, 12)) { tapSlot(i); return; }
+      }
+    }
+  });
+  canvas.addEventListener("pointermove", e => { if (draggingCup) moveCup(toVirtual(e).x); });
+  const release = () => { draggingCup = false; };
+  canvas.addEventListener("pointerup", release);
+  canvas.addEventListener("pointercancel", release);
+
+  // --- 起動 ---
+  let last = 0;
+  function frame(t) {
+    const dt = Math.min((t - last) / 1000, 1 / 20);
+    last = t;
+    update(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  function start(data) {
+    // ラウンドの途中で更新されたら、ショップの状態に戻して続きから遊べるようにする
+    S = data && data.S ? data.S : newRun();
+    if (S.state === "play" || S.state === "fire") { S.state = "shop"; S.ammo = 0; S.enemyHp = S.enemyHpMax; }
+    window.addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(t => { last = t; requestAnimationFrame(frame); });
+  }
+  window.cupDebug = { state: () => S, balls: () => balls.length, step: dt => { update(dt); draw(); } };
+  window.claude?.hot?.snapshot?.(() => ({ S }));
+  if (window.claude?.hot?.ready) window.claude.hot.ready(start);
+  else start(window.claude?.hot?.data ?? {});
+  if (document.fonts) document.fonts.load(`700 20px "Chakra Petch"`).catch(() => {});
+})();
+</script>
