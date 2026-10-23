@@ -1,0 +1,109 @@
+{
+  "title": "カップ×ボール×ゲートのインクリメンタル化：市場の原文抜き書き",
+  "question": "「カップに入ったボールをゲートに通して増やす」ゲームをインクリメンタル（放置・強化・プレステージ）系として作るとき、いまの市場に何があり、どこに余地と落とし穴があるか。",
+  "stopped": "1周目のあと。6つの主張のうち5つに原文の場所が付き、主張2（元祖の特定）は一部だけ。厳密な止める基準には届いていない（2周目で元祖を広告アーカイブから探す余地あり）。",
+  "claims": [
+    {
+      "claim": "1. この界隈の知見はどこに集まっているか（場）",
+      "status": "付いた",
+      "note": "英語圏は Reddit・Game Developer（旧 Gamasutra）・itch の devlog・個人サイト。日本語の Qiita・Zenn・note では、日本語の検索役が該当の記事を見つけられなかった。",
+      "quotes": [
+        {"file": "automaton-2026-incremental-definition.md", "line": 25, "text": "今回はあえてインクリメンタルゲームとして作品を分類する際に、どのような基準があるのかという疑問がRedditに投じられている"},
+        {"file": "lawn-guide-to-incrementals.md", "line": 14, "text": "This is a comprehensive guide to Incremental Games, a genre of video games.", "ja": "これはビデオゲームのジャンルの1つ、インクリメンタルゲームの総合ガイドである。", "mark": "〔本人〕"},
+        {"file": "pecorella-2016-math-idle-1.md", "line": 208, "text": "This article is Part I of what will be a three-part series detailing topics covered in my", "ja": "この記事は、私の（最新の講演で）扱った話題を詳しく述べる3部作の第1部である。", "mark": "〔本人〕"},
+        {"file": "bhg-2025-plinkidle-design-discussion.md", "line": 27, "text": "I'd like to open this discussion up to our players, if anyone is interested!", "ja": "興味がある人がいれば、この議論をプレイヤーにも開きたい！", "mark": "〔本人〕itch devlog"},
+        {"file": "steampageanalyzer-2026-idler.md", "line": 17, "text": "Counted game by game from Steam's store on Sep 27, 2026.", "ja": "2026年9月27日に Steam ストアから1本ずつ数えた。"}
+      ]
+    },
+    {
+      "claim": "2. 「カップのボールをゲートに通して増やす」仕組みの元になった作品と、界隈での呼び名",
+      "status": "一部だけ",
+      "note": "ボール＋ゲートは Voodoo の Bounce and collect（2021-02）、カップ＋ボール＋x2 ゲートは Voodoo の Cup Heroes（App Store 2023-10-25）まで遡れた。さらに前のカップ型の作品があるかは確かめていない。",
+      "quotes": [
+        {"file": "gizmodo-2008-keisan-no-niwa.md", "line": 9, "text": "庭の中には「+5」とか「x7」とか書かれたゲートが配置されています。", "mark": "〔観察〕佐藤雅彦「計算の庭」2008"},
+        {"file": "note-detamaka-bounce-and-collect.md", "line": 15, "text": "それがコチラ、Voodooの『Bounce and collect』です。", "mark": "〔観察〕"},
+        {"file": "note-detamaka-bounce-and-collect.md", "line": 45, "text": "・iOS：2021年2月17日（推定40万DL）", "mark": "〔観察〕"},
+        {"file": "note-detamaka-bounce-and-collect.md", "line": 93, "text": "ボールを増やしたり、減らしたり、貯めたり、反射したり、左右に動いたりする「ゲート」のようなもの", "mark": "〔観察〕"},
+        {"file": "supersonic-2021-hypercasual-trends.md", "line": 57, "text": "multiplier gates, which are physical gates that players can pass through to multiply their resources", "ja": "multiplier gates（倍率ゲート）とは、プレイヤーが通り抜けると資源が増える物理的なゲートのこと", "mark": "〔公式〕パブリッシャー"},
+        {"file": "insightrackr-cup-heroes-intelligence.md", "line": 33, "text": "Apple App Store: 2023-10-25", "mark": "〔まとめ〕"},
+        {"file": "thexboxhub-2025-cup-heroes-review.md", "line": 39, "text": "You pour out ping-pong balls from your cup, and those balls pass through x2, x3 etc gates which multiply those balls.", "ja": "カップからピンポン玉を注ぐと、玉は x2、x3 などのゲートを通って増える。", "mark": "〔観察〕レビュー"},
+        {"file": "4gamer-2026-maaaaath-keisan-gate.md", "line": 243, "text": "左右に並んだ「+5」や「×2」のゲートを選んで仲間を増やしていく，あれだ。", "mark": "〔観察〕"},
+        {"file": "appliv-2026-bump-pop.md", "line": 65, "text": "ボール同士がぶつかると増殖していく", "mark": "〔観察〕"}
+      ]
+    },
+    {
+      "claim": "3. その仕組みをインクリメンタルと組み合わせた作品はすでにあるか、どれくらい遊ばれたか",
+      "status": "付いた",
+      "note": "カップ＋ゲート＋インクリの組み合わせは見つからなかった。近いのはプリンコ／Peggle 型のインクリ（Steam のレビュー数は数百件まで）と、カップ型でローグライト＋自動戦闘の Cup Heroes（モバイル）。",
+      "quotes": [
+        {"file": "steam-ballatory.md", "line": 125, "text": "78% of the 88 user reviews for this game are positive.", "ja": "88件のレビューのうち78%が好評。", "mark": "〔公式〕Steam"},
+        {"file": "steam-pegfinity.md", "line": 133, "text": "76% of the 374 user reviews for this game are positive.", "ja": "374件のレビューのうち76%が好評。", "mark": "〔公式〕Steam"},
+        {"file": "steam-idle-gumball-machine.md", "line": 133, "text": "90% of the 271 user reviews for this game are positive.", "ja": "271件のレビューのうち90%が好評。", "mark": "〔公式〕Steam"},
+        {"file": "steam-plinkidle.md", "line": 125, "text": "2 Nov, 2026", "ja": "発売予定 2026年11月2日（レビューはまだ無い）", "mark": "〔公式〕Steam"},
+        {"file": "steam-ball-x-pit.md", "line": 133, "text": "95% of the 15,753 user reviews for this game are positive.", "ja": "15,753件のレビューのうち95%が好評（ボール系ローグライト、インクリではない）。", "mark": "〔公式〕Steam"},
+        {"file": "insightrackr-cup-heroes-intelligence.md", "line": 13, "text": "achieved 1.4 million monthly downloads and $1.7 million in revenue in Q2 2025", "ja": "2025年Q2に月140万DL、売上170万ドルに達した", "mark": "〔まとめ〕推定値"},
+        {"file": "applestore-cup-heroes.md", "line": 10, "text": "89K Ratings", "ja": "評価8.9万件（米 App Store）", "mark": "〔公式〕"}
+      ]
+    },
+    {
+      "claim": "4. 既存のカップ・ボール増殖系でプレイヤーが不満に思う点",
+      "status": "付いた",
+      "quotes": [
+        {"file": "thexboxhub-2025-cup-heroes-review.md", "line": 57, "text": "Until it rather sharply stopped being wonderful, around the fourth hour of Cup Heroes and roughly level 15+.", "ja": "Cup Heroes の4時間目、レベル15あたりで、急に楽しくなくなった。", "mark": "〔観察〕レビュー"},
+        {"file": "thexboxhub-2025-cup-heroes-review.md", "line": 63, "text": "The pachinko gates gain trampolines, get faster and even move off screen, but there are (at least at ten hours in) precious few interesting ingredients.", "ja": "パチンコ部分のゲートはトランポリンが付いたり速くなったり画面外に動いたりするが、（少なくとも10時間の時点では）面白い要素はごくわずかだ。", "mark": "〔観察〕レビュー"},
+        {"file": "thexboxhub-2025-cup-heroes-review.md", "line": 49, "text": "The best path through the gates is often abundantly obvious", "ja": "ゲートを通す最善の道筋は、たいてい見ればすぐ分かる", "mark": "〔観察〕レビュー"},
+        {"file": "applestore-cup-heroes.md", "line": 84, "text": "all their games are unplayable, in my opinion, because of the abusive use of ads.", "ja": "広告の乱用のせいで、彼らのゲームはどれも遊べたものではないと思う。", "mark": "〔本人〕App Store レビュー"},
+        {"file": "applestore-money-rush.md", "line": 128, "text": "I feel like what would have made this game is the satisfaction of growing larger and larger. However, in this game most of the time the levels are too short", "ja": "このゲームを良くするはずだったのは、どんどん大きくなる満足感だと思う。でもたいていステージが短すぎる", "mark": "〔本人〕App Store レビュー"},
+        {"file": "appliv-2026-bump-pop.md", "line": 71, "text": "ステージはサクサク進められますが、広告が表示される回数が多いのが若", "mark": "〔観察〕"},
+        {"file": "4gamer-2026-maaaaath-keisan-gate.md", "line": 255, "text": "簡単な四則演算すら間違え続けるゲーム広告にうんざりしていたことが，開発のきっかけだったそうだ。", "mark": "〔観察〕開発者の談"}
+      ]
+    },
+    {
+      "claim": "5. インクリメンタルの設計がどこで失敗するか（開発者の知見）",
+      "status": "付いた",
+      "note": "PlinkIdle の devlog は、物理ボールのインクリ化で画面上のボール数をどう抑えるかを扱っている。",
+      "quotes": [
+        {"file": "pecorella-2016-math-idle-1.md", "line": 224, "text": "Early on in a run, your production will exceed costs while eventually costs will become prohibitive.", "ja": "1回のプレイの序盤は生産がコストを上回るが、やがてコストが手に負えなくなる。", "mark": "〔本人〕"},
+        {"file": "pecorella-2017-math-idle-3.md", "line": 258, "text": "To double prestige currency, a player would need to earn 4 times as much as the previous run", "ja": "プレステージ通貨を2倍にするには、前回の4倍稼ぐ必要がある", "mark": "〔本人〕"},
+        {"file": "lawn-guide-balancing.md", "line": 46, "text": "Inflation is the term for when the effects of available repeatable purchases impact production more than the cost scaling of those purchases.", "ja": "インフレとは、繰り返し買える強化の効果が、そのコストの伸びより生産に強く効く状態を言う。", "mark": "〔本人〕"},
+        {"file": "lawn-guide-balancing.md", "line": 48, "text": "The most effective way to avoid unintentional inflation is to ensure the effect of any repeatable purchase has a higher asymptotic growth than the cost.", "ja": "意図しないインフレを避けるいちばん効く方法は、繰り返し買える強化について（原文のまま訳すと）効果の漸近的な伸びをコストより高くすること。", "mark": "〔本人〕"},
+        {"file": "bhg-2025-plinkidle-design-discussion.md", "line": 87, "text": "So, sad news, I think we need to cap how many balls can be on screen at once.", "ja": "残念な知らせだが、画面上に同時に出せるボールの数に上限を設ける必要があると思う。", "mark": "〔本人〕devlog"},
+        {"file": "bhg-2025-plinkidle-design-discussion.md", "line": 168, "text": "I would try really hard to avoid needing to cap the balls, especially not this early.", "ja": "ボールの上限は、とくにこんな早い段階では、全力で避けるようにしたい。", "mark": "〔本人〕The Paper Pilot のコメント"},
+        {"file": "bhg-2025-plinkidle-design-discussion.md", "line": 166, "text": "reset layers in incremental games have an unfortunate habit of replacing really fun and unique gameplay with more generic", "ja": "インクリメンタルのリセット層は、本当に面白く独自のゲームプレイを、もっとありきたりなものに置き換えてしまう悪い癖がある", "mark": "〔本人〕The Paper Pilot のコメント"},
+        {"file": "furtado-2018-lessons-first-incremental.md", "line": 316, "text": "It's important to automatize balancing from the start, I believe. I didn't.", "ja": "バランス調整は最初から自動化するのが大事だと思う。私はしなかった。", "mark": "〔本人〕"},
+        {"file": "guan-2025-idle-design-principles.md", "line": 33, "text": "Ideal idle game pacing follows that decaying engagement.", "ja": "理想的な放置ゲームのペースは、その減っていく熱量に沿う。", "mark": "〔本人〕"}
+      ]
+    },
+    {
+      "claim": "6. Steam／モバイルでの売れ方（数字）",
+      "status": "付いた",
+      "quotes": [
+        {"file": "steampageanalyzer-2026-idler.md", "line": 9, "text": "940 games tagged Idler came out on Steam in 2025 (572 in 2024), and 1,566 have come out so far in 2026, +150% on the same weeks of 2025.", "ja": "Idler タグの作品は2025年に940本（2024年は572本）、2026年はここまでで1,566本、前年同期比 +150%。"},
+        {"file": "steampageanalyzer-2026-idler.md", "line": 11, "text": "5.6% reached 1,000 reviews, against 4.2% across all of Steam", "ja": "1,000レビューに達したのは5.6%。Steam 全体は4.2%"},
+        {"file": "steampageanalyzer-2026-idler.md", "line": 13, "text": "Most of the niche prices itself under $5 (2.5% reached 1,000 reviews there); $10 to $14.99 did best at 16.1%.", "ja": "多くは5ドル未満（そこで1,000レビューに達したのは2.5%）。10〜14.99ドルが最も良く16.1%。"},
+        {"file": "pcgamer-2026-54-idle-games.md", "line": 56, "text": "The vast majority of the idlers that released on Steam last week have an AI disclosure.", "ja": "先週 Steam で出た放置ゲームの大多数に AI 使用の表示がある。", "mark": "〔観察〕"},
+        {"file": "robinson-gamedevnet-creativity-problem.md", "line": 35, "text": "Incremental games aren't dead but node busters are flooding the market", "ja": "インクリメンタルは死んでいないが、node buster が市場にあふれている", "mark": "〔まとめ〕動画の紹介"},
+        {"file": "voodoo-2025-2024-results.md", "line": 60, "text": "The company confirms the success of its strategic shift from \"Hyper Casual\" mobile games", "ja": "同社は「ハイパーカジュアル」からの戦略転換が成功したと確認した", "mark": "〔公式〕"},
+        {"file": "unity-hyper-to-hybrid.md", "line": 23, "text": "hyper-casual games still reach 1.7B installs per year and bring in $2-2.5B in annual revenue. But a decline in installs is starting to show.", "ja": "ハイパーカジュアルはいまも年17億インストール、年20〜25億ドルの売上があるが、インストールの減少が見え始めている。", "mark": "〔公式〕"},
+        {"file": "unity-hyper-to-hybrid.md", "line": 33, "text": "hybrid games get 45% more rewarded video impressions and generate 20-50% of their revenue from IAP", "ja": "ハイブリッドカジュアルはリワード動画の表示が45%多く、売上の20〜50%をアプリ内課金で得る", "mark": "〔公式〕"}
+      ]
+    }
+  ],
+  "disagreements": [
+    {
+      "topic": "2025年に Steam で出た Idler タグの本数",
+      "quotes": [
+        {"file": "steampageanalyzer-2026-idler.md", "line": 9, "text": "940 games tagged Idler came out on Steam in 2025", "who": "Steam Page Analyzer（2026-09-27 集計）"},
+        {"file": "pcgamer-2026-54-idle-games.md", "line": 88, "text": "last year there were 1033", "who": "PC Gamer（SteamDB の数字として）"}
+      ]
+    }
+  ],
+  "unreached": [
+    "カップ＋ボール＋倍率ゲートの元祖の特定（Cup Heroes 2023 より前のカップ型）— 広告アーカイブや AppMagic・Sensor Tower は有料か未確認",
+    "Payne Robinson の元の動画（gamedev.net は紹介の要約だけ。yt-dlp が無く字幕を取れなかった）",
+    "lemm.ee の長編インクリへの不満スレッド（ホストが名前解決できず FAIL）",
+    "Pecorella の GDC 2015 講演（GDC Vault は会員限定の可能性）。GDC Europe 2016 のスライドは SlideShare の本文がほぼ取れなかった",
+    "r/incremental_games のスレッド本文（今回は保存していない）",
+    "モバイル各作品の DL・売上の正確な数字（Multi Maze 3D、Balls go High など）"
+  ]
+}
