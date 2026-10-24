@@ -7,16 +7,18 @@ signal gate_passed(idx: int, type: String, pos: Vector2)
 signal gate_empty(idx: int)
 signal peg_hit(pos: Vector2, speed: float)
 signal ball_collected(val: float, pos: Vector2)
-signal block_gained(amount: int, pos: Vector2)
+signal chip_gained(amount: int, pos: Vector2)
 
 const BOARD_L := 560.0
 const BOARD_R := 1360.0
 const BOARD_TOP := 100.0
 const COLS := 4
-const ROW_YS: Array[float] = [330.0, 480.0, 630.0]
-const PEG_YS: Array[float] = [405.0, 555.0, 705.0]
+# 4列×5行。行が深いほど「順番で結果が変わる」が効く。ペグはゲートの行の間に置く
+const ROW_YS: Array[float] = [255.0, 355.0, 455.0, 555.0, 655.0]
+const PEG_YS: Array[float] = [305.0, 405.0, 505.0, 605.0, 705.0]
 const GATE_W := 160.0
-const GATE_H := 52.0
+const GATE_H := 40.0
+const MIN_VAL := 0.001  # 玉の値の下限（÷ や 1/x で 0 や無限大にならないように）
 const CUP_Y := 175.0
 const COLLECT_Y := 760.0
 const BALL_R := 10.0
@@ -39,10 +41,15 @@ const GATE_DEFS := {
 	"left": {"label": "←", "desc": "玉を左の列へ", "kind": "経路", "color": Color(0.28, 0.7, 0.75)},
 	"cheer": {"label": "応援", "desc": "隣の効果が2回", "kind": "盤面", "color": Color(0.88, 0.76, 0.28)},
 	"charge": {"label": "充電", "desc": "隣の回数 +1", "kind": "盤面", "color": Color(0.58, 0.58, 0.92)},
-	"shield": {"label": "盾", "desc": "通過でブロック+1", "kind": "守り", "color": Color(0.55, 0.62, 0.72)},
+	"inv": {"label": "C/x", "desc": "値を 6÷値 に", "kind": "関数", "color": Color(0.62, 0.35, 0.85)},
+	"chip": {"label": "刻み", "desc": "通るたび弾倉+2", "kind": "弾", "color": Color(0.55, 0.62, 0.72)},
 	# 次のターンの準備（効果の判定は main 側で数える）
 	"power": {"label": "発電", "desc": "5回で次エネ+1", "kind": "準備", "color": Color(0.95, 0.5, 0.35)},
 	"scout": {"label": "索敵", "desc": "3回で次+1枚", "kind": "準備", "color": Color(0.35, 0.65, 0.95)},
+	# 敵が置くデメリットゲート（プレイヤーは上に置けない）
+	"div2": {"label": "÷2", "desc": "値 ÷2", "kind": "敵", "color": Color(0.55, 0.16, 0.2), "enemy": true},
+	"minus": {"label": "−5", "desc": "値 −5", "kind": "敵", "color": Color(0.5, 0.2, 0.16), "enemy": true},
+	"root": {"label": "√", "desc": "値を平方根に", "kind": "敵", "color": Color(0.45, 0.16, 0.35), "enemy": true},
 }
 
 var slots: Array = []  # null か {type, uses, max, flash, empty_flash}
@@ -85,8 +92,16 @@ func _ready() -> void:
 
 
 static func fmt(x: float) -> String:
+	if x <= 0.0:
+		return "0"
+	if x < 1.0:
+		# 1 未満は小数で（0.5、0.03 など）。末尾の 0 は落とす
+		var s := "%.3f" % x
+		return s.rstrip("0").rstrip(".") if s != "0.000" else "0.001"
+	if x < 100.0 and not is_equal_approx(x, roundf(x)):
+		return "%.1f" % x
 	if x < 1000.0:
-		return "%d" % int(x)
+		return "%d" % int(roundf(x))
 	var e := int(floor(log(x) / log(1000.0)))
 	if e < SUFFIX.size():
 		return "%.2f%s" % [x / pow(1000.0, e), SUFFIX[e]]
@@ -121,11 +136,14 @@ func gate_label(g: Dictionary) -> String:
 		"mul":
 			var m: float = g["val"] + mul_bonus
 			return "×%d" % m if is_equal_approx(m, roundf(m)) else "×%.1f" % m
+		"inv":
+			return "%d/x" % g["val"]
 	return GATE_DEFS[g["type"]]["label"]
 
 
+## 玉の半径は値の対数で決める。1 未満の玉は小さくなる（反転で巨大化する見せ場のため）
 func ball_radius(val: float) -> float:
-	return minf(BALL_R + 5.0 * log(maxf(val, 1.0)) / log(10.0), BALL_R_MAX)
+	return clampf(BALL_R + 5.0 * log(maxf(val, MIN_VAL)) / log(10.0), 4.0, BALL_R_MAX)
 
 
 ## ペグを標準の互い違いの並びに戻す
@@ -157,29 +175,19 @@ func clear_board() -> void:
 ## val はゲートの効き目（+3 の 3 など）、bonus はこのゲートだけの回数の上乗せ
 func place(idx: int, type: String, uses: int, val := 0.0, bonus := 0) -> void:
 	slots[idx] = {"type": type, "uses": uses + bonus, "max": uses + bonus, "val": val, "bonus": bonus,
-		"sealed": false, "flash": 0.0, "empty_flash": 0.0, "pop": 0.35}
+		"flash": 0.0, "empty_flash": 0.0, "pop": 0.35}
 
 
+## 回数を 1ターン分に戻す（敵のデメリットゲートも同じ回数で、使い切ると素通りになる）
 func refill(uses: int) -> void:
 	for g in slots:
 		if g != null:
 			g["uses"] = uses + g["bonus"]
 			g["max"] = uses + g["bonus"]
-			g["sealed"] = false
 
 
-## ゲートを1つ封じる（このターンは使えない）。封じたマス番号を返す（無ければ -1）
-func seal_random() -> int:
-	var cands := []
-	for i in slots.size():
-		if slots[i] != null:
-			cands.append(i)
-	if cands.is_empty():
-		return -1
-	var i: int = cands.pick_random()
-	slots[i]["sealed"] = true
-	slots[i]["uses"] = 0
-	return i
+static func is_enemy_gate(g) -> bool:
+	return g != null and GATE_DEFS[g["type"]].get("enemy", false)
 
 
 func empty_slots() -> Array[int]:
@@ -316,10 +324,19 @@ func _effect(b: Dictionary, g: Dictionary, idx: int) -> void:
 			b["v"] = Vector2(0.0, b["v"].y)
 		"charge":
 			for k in neighbors(idx):
-				if slots[k] != null and not slots[k]["sealed"]:
+				if slots[k] != null:
 					slots[k]["uses"] = mini(slots[k]["max"], slots[k]["uses"] + int(g["val"]))
-		"shield":
-			block_gained.emit(int(g["val"]), slot_rect(idx).get_center())
+		"chip":
+			chip_gained.emit(int(g["val"]), slot_rect(idx).get_center())
+		"inv":
+			b["val"] = g["val"] / maxf(b["val"], MIN_VAL)
+		"div2":
+			b["val"] /= 2.0
+		"minus":
+			b["val"] -= 5.0
+		"root":
+			b["val"] = sqrt(maxf(b["val"], 0.0))
+	b["val"] = maxf(b["val"], MIN_VAL)
 
 
 # --- 描画 ---
@@ -380,22 +397,22 @@ func _draw() -> void:
 		gate_box.modulate_color = col
 		draw_style_box(gate_box, rr)
 		var label: String = gate_label(g)
-		draw_string_outline(font, Vector2(rr.position.x, rr.get_center().y + 13), label, HORIZONTAL_ALIGNMENT_CENTER,
-			rr.size.x, 36, 6, Color(0, 0, 0, 0.35))
-		draw_string(font, Vector2(rr.position.x, rr.get_center().y + 13), label, HORIZONTAL_ALIGNMENT_CENTER,
-			rr.size.x, 36, Color.WHITE)
-		if g["sealed"]:
-			draw_line(rr.position, rr.end, Color(0.9, 0.3, 0.9), 5.0)
-			draw_line(Vector2(rr.position.x, rr.end.y), Vector2(rr.end.x, rr.position.y), Color(0.9, 0.3, 0.9), 5.0)
-			draw_string_outline(font, Vector2(rr.end.x - 40, rr.position.y + 4), "封", HORIZONTAL_ALIGNMENT_CENTER, 40, 30, 6,
-				Color(0, 0, 0, 0.7))
-			draw_string(font, Vector2(rr.end.x - 40, rr.position.y + 4), "封", HORIZONTAL_ALIGNMENT_CENTER, 40, 30,
-				Color(1.0, 0.5, 1.0))
+		draw_string_outline(font, Vector2(rr.position.x, rr.get_center().y + 11), label, HORIZONTAL_ALIGNMENT_CENTER,
+			rr.size.x, 30, 6, Color(0, 0, 0, 0.35))
+		draw_string(font, Vector2(rr.position.x, rr.get_center().y + 11), label, HORIZONTAL_ALIGNMENT_CENTER,
+			rr.size.x, 30, Color.WHITE)
+		if def.get("enemy", false):
+			# 敵のデメリットゲート: 赤い縁と「敵」の札
+			draw_rect(rr.grow(3.0), Color(1.0, 0.35, 0.35, 0.9), false, 3.0)
+			var tag := Rect2(rr.position + Vector2(-6, -12), Vector2(34, 24))
+			draw_rect(tag, Color(0.85, 0.2, 0.2))
+			draw_string(font, Vector2(tag.position.x, tag.position.y + 19), "敵", HORIZONTAL_ALIGNMENT_CENTER, tag.size.x, 18,
+				Color.WHITE)
 		if g["type"] == "bounce":
 			# 左右どちらにも飛ぶことを示す、上向きに開いた2本の矢印
-			var base := Vector2(rr.end.x - 28.0, rr.get_center().y + 14.0)
+			var base := Vector2(rr.end.x - 28.0, rr.get_center().y + 11.0)
 			for d in [-1.0, 1.0]:
-				var tip := base + Vector2(d * 16.0, -30.0)
+				var tip := base + Vector2(d * 14.0, -24.0)
 				draw_line(base, tip, Color.WHITE, 4.0)
 				draw_line(tip, tip + Vector2(-d * 1.0, 12.0), Color.WHITE, 4.0)
 				draw_line(tip, tip + Vector2(-d * 11.0, 5.0), Color.WHITE, 4.0)
@@ -405,7 +422,7 @@ func _draw() -> void:
 		var x0 := r.get_center().x - (n * dot_w) / 2.0
 		for k in n:
 			var c := Color(1, 1, 1, 0.85) if k < g["uses"] else Color(1, 1, 1, 0.15)
-			draw_circle(Vector2(x0 + k * dot_w + dot_w / 2.0, r.end.y + 12.0), 3.2, c)
+			draw_circle(Vector2(x0 + k * dot_w + dot_w / 2.0, r.end.y + 9.0), 3.0, c)
 
 	# 回収口（弾倉へ送るベルト）
 	var belt := Rect2(BOARD_L - 20, COLLECT_Y, BOARD_R - BOARD_L + 40, 34)
@@ -422,24 +439,24 @@ func _draw() -> void:
 	# 玉
 	for b in balls:
 		var val: float = b["val"]
-		var mag := log(maxf(val, 1.0)) / log(10.0)
-		var c := Color.from_hsv(fmod(0.12 + mag * 0.11, 1.0), 0.62, 1.0)
+		var mag := log(maxf(val, MIN_VAL)) / log(10.0)
+		var c := Color.from_hsv(fposmod(0.12 + mag * 0.11, 1.0), 0.62, 1.0)
 		var rad: float = ball_radius(val) * (1.0 + 0.6 * b["pop"])
 		draw_circle(b["p"], rad + 2.0, c.darkened(0.45))
 		draw_circle(b["p"], rad, c)
 		draw_circle(b["p"] + Vector2(-rad * 0.35, -rad * 0.35), rad * 0.28, Color(1, 1, 1, 0.55))
-		if val >= 2.0:
-			var fs := int(clampf(rad * 0.95, 12.0, 28.0))
-			draw_string_outline(font, b["p"] + Vector2(-rad * 1.5, fs * 0.36), fmt(val), HORIZONTAL_ALIGNMENT_CENTER,
-				rad * 3.0, fs, 4, Color(0, 0, 0, 0.5))
-			draw_string(font, b["p"] + Vector2(-rad * 1.5, fs * 0.36), fmt(val), HORIZONTAL_ALIGNMENT_CENTER,
-				rad * 3.0, fs, Color.WHITE)
+		if val >= 2.0 or val < 0.99:
+			# 小さい玉は数字が入らないので、玉の上に書く
+			var fs := int(clampf(rad * 0.95, 16.0, 28.0))
+			var at: Vector2 = b["p"] + (Vector2(-60, fs * 0.36) if rad >= 12.0 else Vector2(-60, -rad - 4.0))
+			draw_string_outline(font, at, fmt(val), HORIZONTAL_ALIGNMENT_CENTER, 120, fs, 5, Color(0, 0, 0, 0.6))
+			draw_string(font, at, fmt(val), HORIZONTAL_ALIGNMENT_CENTER, 120, fs, Color.WHITE)
 
 
 func _draw_glow() -> void:
 	for b in balls:
-		var mag := log(maxf(b["val"], 1.0)) / log(10.0)
-		var c := Color.from_hsv(fmod(0.12 + mag * 0.11, 1.0), 0.7, 1.0, 0.35 + 0.5 * b["pop"])
+		var mag := log(maxf(b["val"], MIN_VAL)) / log(10.0)
+		var c := Color.from_hsv(fposmod(0.12 + mag * 0.11, 1.0), 0.7, 1.0, 0.35 + 0.5 * b["pop"])
 		var s := ball_radius(b["val"]) * 5.0
 		glow_layer.draw_texture_rect(glow_tex, Rect2(b["p"] - Vector2(s, s) / 2.0, Vector2(s, s)), false, c)
 	for i in slots.size():
