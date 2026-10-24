@@ -17,13 +17,13 @@ const SWEEP_SPEED := 520.0
 const REMOVE_PRICE := 75
 const ROUTE_LEN := 11  # 1章の層の数（最後がボス）
 const TYPE_NAME := {"battle": "戦闘", "elite": "強敵", "shop": "ショップ", "rest": "休憩", "treasure": "宝箱", "boss": "ボス"}
-const GUN_POS := Vector2(1450.0, 800.0)
-const ENEMY_POS := Vector2(1665.0, 340.0)
-const ENEMY_R := 110.0
+const ENEMY_POS := Vector2(1530.0, 165.0)  # 台の上段の右
+const ENEMY_R := 72.0
 const BULLET_SPEED := 2600.0
 const BULLET_RATE := 32.0
-const DECK_POS := Vector2(110.0, 980.0)
-const DISCARD_POS := Vector2(1810.0, 1040.0)
+const DECK_POS := Vector2(120.0, 720.0)
+const DISCARD_POS := Vector2(1800.0, 980.0)
+const HAND_SCALE := 0.85  # 手札は左上に 3列で並べるので少し縮める
 
 var R := {}  # ラン全体: gold, deck, relics, floor（HP はない。ノルマに届かなければランが終わる）
 var S := {}  # いまの戦闘
@@ -36,13 +36,12 @@ var ui := {}
 var hand_cards: Array = []
 var panel: Control  # いま開いている画面（報酬・ショップ・休憩など）
 var visible_world := false  # 敵・銃・弾を描くか（戦闘中だけ）
+var _sprite_cache := {}  # 敵の id → ドット絵の形
 
 var fire_t := 0.0
 var fire_hp_start := 0.0
 var bullet_acc := 0.0
 var bullets: Array[Dictionary] = []
-var gun_spin := 0.0
-var recoil := 0.0
 var enemy_flash := 0.0
 var enemy_offset := Vector2.ZERO
 var enemy_scale := 1.0
@@ -56,6 +55,7 @@ var pass_counts := {}  # このターンにゲート（マス番号）を玉が�
 
 var demo := false
 var demo_kind := ""
+var demo_pour := false  # デモ: カードを置き終えたので、カップが狙いの位置に来たら注ぐ
 var shots_dir := ""
 var next_shot := 0.0
 var shot_index := 0
@@ -65,13 +65,15 @@ const SHOT_INTERVAL := 0.1
 
 
 func _ready() -> void:
-	font = load("res://assets/fonts/MPLUSRounded1c-Bold.ttf")
+	font = Style.font()
+	_build_backdrop()
 	cam = Camera2D.new()
 	cam.position = Vector2(960, 540)
 	add_child(cam)
 	cam.make_current()
 
 	board = Board.new()
+	board.z_index = -1  # 台は奥。敵（台の上段）と弾は main が台の上に描く
 	add_child(board)
 	fx = Fx.new()
 	add_child(fx)
@@ -88,6 +90,34 @@ func _ready() -> void:
 	_parse_args()
 	if not demo:
 		_show_title()
+
+
+## いちばん奥に渦を巻く背景、いちばん手前にブラウン管風の仕上げを重ねる
+func _build_backdrop() -> void:
+	var back := CanvasLayer.new()
+	back.layer = -10
+	add_child(back)
+	var swirl := ColorRect.new()
+	swirl.size = Vector2(1920, 1080)
+	swirl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sm := ShaderMaterial.new()
+	sm.shader = load("res://shaders/swirl.gdshader")
+	sm.set_shader_parameter("col_bg", Style.BG)
+	sm.set_shader_parameter("col_a", Style.BG_SWIRL_A)
+	sm.set_shader_parameter("col_b", Style.BG_SWIRL_B)
+	swirl.material = sm
+	back.add_child(swirl)
+
+	var front := CanvasLayer.new()
+	front.layer = 100
+	add_child(front)
+	var crt := ColorRect.new()
+	crt.size = Vector2(1920, 1080)
+	crt.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var cm := ShaderMaterial.new()
+	cm.shader = load("res://shaders/crt.gdshader")
+	crt.material = cm
+	front.add_child(crt)
 
 
 func _parse_args() -> void:
@@ -153,11 +183,17 @@ func _show_title() -> void:
 	_set_battle_visible(false)
 	ui["top"].visible = false
 	var p := _open_panel("")
-	var t := _label(p, Vector2(0, 250), 96, Color(1.0, 0.88, 0.5))
+	p.color = Color(Style.BG, 0.35)  # 渦の背景を見せる
+	var t := _label(p, Vector2(0, 230), 112, Style.GOLD)
 	t.text = "カップ × ゲート × ミニガン"
-	t.size = Vector2(1920, 120)
+	t.size = Vector2(1920, 140)
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	var sub := _label(p, Vector2(0, 400), 32, Color(1, 1, 1, 0.75))
+	t.pivot_offset = t.size / 2.0
+	t.add_theme_constant_override("shadow_offset_y", 8)
+	var wob := t.create_tween().set_loops()
+	wob.tween_property(t, "rotation_degrees", 1.5, 1.6).set_trans(Tween.TRANS_SINE)
+	wob.tween_property(t, "rotation_degrees", -1.5, 1.6).set_trans(Tween.TRANS_SINE)
+	var sub := _label(p, Vector2(0, 400), 32, Style.INK_DIM)
 	sub.text = "玉を注いで、ゲートで増やして、撃ち抜くデッキ構築ローグライト（試作）"
 	sub.size = Vector2(1920, 50)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -188,15 +224,12 @@ func _next_floor() -> void:
 			_show_treasure()
 
 
-## 上の帯に出す「ショップまであと2 ・ 宝箱まであと4 …」。この先に無いものは出さない
-func _ahead_text() -> String:
-	var parts := []
-	for t in ["shop", "treasure", "rest", "elite", "boss"]:
-		for i in range(R["floor"], R["route"].size()):
-			if R["route"][i]["type"] == t:
-				parts.append("%sまで%d" % [TYPE_NAME[t], i + 1 - R["floor"]])
-				break
-	return "　".join(parts)
+## 次のその種類の層まで、あと何層か（この先に無ければ -1）
+func _floors_until(t: String) -> int:
+	for i in range(R["floor"], R["route"].size()):
+		if R["route"][i]["type"] == t:
+			return i + 1 - R["floor"]
+	return -1
 
 
 # ============================================================
@@ -231,11 +264,7 @@ func _start_battle(enemy_id: String) -> void:
 	enemy_scale = 0.0
 	enemy_offset = Vector2.ZERO
 	create_tween().tween_property(self, "enemy_scale", 1.0, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	var kind := "ボス" if S["enemy"].get("boss", false) else ("強敵" if S["enemy"].get("elite", false) else "戦闘")
-	ui["title"].text = "%s — %s" % [kind, S["enemy"]["name"]]
 	_start_turn()
-	if S["enemy"].has("trait"):
-		fx.float_text(Vector2(960, 400), Data.TRAITS[S["enemy"]["trait"]], Color(1.0, 0.6, 0.9), 40, 40.0, 2.0)
 
 
 func _start_turn() -> void:
@@ -255,14 +284,13 @@ func _start_turn() -> void:
 	board.highlight.clear()
 	board.refill(_gate_uses())
 	board.sweep_speed = SWEEP_SPEED * (0.65 if has_relic("scope") else 1.0) * (1.6 if _trait() == "fast" else 1.0)
-	var note := ""
 	if _trait() == "pegs":
 		board.shuffle_pegs()
-		note = "ペグの並びが変わった\n"
+		_toast("ペグの並びが変わった")
+	board.sweeping = true  # カップはターンのあいだずっと左右に動いている
 
 	_rebuild_hand()
 	_draw_cards(draw_n)
-	_say(note + "カードを選ぶ。ゲートは光ったマスに置く（右クリックで取り消し）")
 
 
 ## 1ターンにゲート1つが働く回数（敵のデメリットゲートも同じ）
@@ -300,7 +328,7 @@ func _draw_cards(n: int) -> void:
 		var card: Card = hand_cards[first + k]
 		var tw := card.create_tween().set_parallel().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 		tw.tween_property(card, "position", card.base_pos, 0.35).set_delay(k * 0.07)
-		tw.tween_property(card, "scale", Vector2.ONE, 0.35).set_delay(k * 0.07)
+		tw.tween_property(card, "scale", Vector2.ONE * card.base_scale, 0.35).set_delay(k * 0.07)
 		tw.tween_property(card, "modulate:a", 1.0, 0.2).set_delay(k * 0.07)
 		get_tree().create_timer(k * 0.07).timeout.connect(fx.sound.bind("tap", -14.0, 1.2))
 
@@ -311,7 +339,7 @@ func _play_card(i: int) -> void:
 	var id: String = S["hand"][i]
 	var card := Data.info(id)
 	if S["energy"] < card["cost"]:
-		_say("エネルギーが足りない")
+		_toast("エネルギーが足りない")
 		return
 	if not card.has("gate"):
 		# 先に手札から出してから効果を出す（引く効果で手札の並びが変わるため）
@@ -325,7 +353,7 @@ func _play_card(i: int) -> void:
 		return
 	var empty := board.empty_slots()
 	if empty.is_empty():
-		_say("盤面が埋まっていて置けない")
+		_toast("盤面が埋まっていて置けない")
 		return
 	# 候補マスはカード1枚ごとに一度だけ抽選する（選び直しても変わらない）。埋まったマスは外し、全部埋まったときだけ引き直す
 	var card_node: Card = hand_cards[i]
@@ -338,7 +366,6 @@ func _play_card(i: int) -> void:
 	for k in cands:
 		board.highlight[k] = true
 	fx.sound("click")
-	_say("%s：%s\n光ったマスを選ぶ" % [card["name"], Data.gate_desc(id)])
 
 
 ## 候補マスの抽選: 各列から空きマスを1つずつ（どの列にも置ける）＋残りからランダムに EXTRA_CANDIDATES 個
@@ -357,7 +384,6 @@ func _roll_candidates(empty: Array[int]) -> Array:
 func _cancel_select() -> void:
 	S["selected"] = -1
 	board.highlight.clear()
-	_say("カードを選ぶ。ゲートは光ったマスに置く（右クリックで取り消し）")
 
 
 func _place_selected(slot: int) -> void:
@@ -372,7 +398,6 @@ func _place_selected(slot: int) -> void:
 	fx.burst(Board.slot_rect(slot).get_center(), c, 18, 380.0, 34.0, 0.4, "star_06")
 	fx.sound("tink", -4.0, 0.8)
 	_discard_card(i, false, Board.slot_rect(slot).get_center())
-	_say("カードを選ぶ。ゲートは光ったマスに置く（右クリックで取り消し）")
 
 
 func _instant(id: String) -> void:
@@ -383,8 +408,7 @@ func _instant(id: String) -> void:
 			fx.float_text(Vector2(board.cup_x, Board.CUP_Y - 70), "玉 +%d" % v, Color(1.0, 0.9, 0.5))
 		"extend":
 			S["turns"] += int(v)
-			fx.float_text(Vector2(280, 170), "制限ターン +%d" % v, Color(0.6, 0.9, 1.0), 34)
-			_punch(ui["turns"])
+			fx.float_text(ENEMY_POS + Vector2(0, -230), "制限ターン +%d" % v, Color(0.6, 0.9, 1.0), 34)
 		"load":
 			S["ammo_mul"] *= v
 			fx.float_text(Vector2(960, 730), "弾倉 ×%.1f" % v, Color(1.0, 0.75, 0.4))
@@ -393,44 +417,27 @@ func _instant(id: String) -> void:
 			fx.float_text(Vector2(960, 730), "玉ごと +%d" % v, Color(1.0, 0.6, 0.4))
 		"focus":
 			S["energy"] += int(v)
-			fx.float_text(Vector2(125, 330), "+%d" % v, Color(1.0, 0.75, 0.35), 44)
+			fx.float_text(Vector2(135, 100), "+%d" % v, Color(1.0, 0.75, 0.35), 44)
 			_punch(ui["energy"])
 		"refill", "prep":
 			_draw_cards(int(v))
 		"save":
 			S["next_energy"] += int(v)
-			fx.float_text(Vector2(125, 330), "次ターン +%d" % v, Color(1.0, 0.75, 0.35), 30)
+			fx.float_text(Vector2(135, 100), "次ターン +%d" % v, Color(1.0, 0.75, 0.35), 30)
 
 
-## ターン終了: 手札を捨て、カップが左右に動き出す（狙い）。クリックかスペースで止めると注ぐ
+## ターン終了: 動いているカップをその場で止め、そこから玉を注ぐ（注ぐボタンかスペース）
 func _pour() -> void:
 	if S["phase"] != "turn":
 		return
-	S["phase"] = "aim"
+	S["phase"] = "pour"
 	_cancel_select()
 	for i in range(S["hand"].size() - 1, -1, -1):
 		_discard_card(i, false)
-	board.sweeping = true
-	fx.sound("click")
-	_say("カップが動いている。\nクリックかスペースで止めると、そこから注ぐ")
-
-
-func _lock_cup() -> void:
-	if S["phase"] != "aim":
-		return
-	S["phase"] = "pour"
 	board.sweeping = false
 	board.to_pour = S["balls"]
 	fx.sound("tink", -4.0, 0.7)
 	fx.burst(Vector2(board.cup_x, Board.CUP_Y - 40.0), Color(1.0, 0.9, 0.55), 14, 300.0, 28.0, 0.35, "star_06", 0.0)
-	_say("注いでいる…")
-
-
-func _on_pour_button() -> void:
-	if S["phase"] == "turn":
-		_pour()
-	elif S["phase"] == "aim":
-		_lock_cup()
 
 
 func _discard_card(i: int, instant_fx: bool, target := DISCARD_POS, exhaust := false) -> void:
@@ -456,11 +463,12 @@ func _discard_card(i: int, instant_fx: bool, target := DISCARD_POS, exhaust := f
 
 func _process(delta: float) -> void:
 	time += delta
-	if demo and S["phase"] == "aim":
-		# デモでは2列目の真上に来たところで止める
+	if demo_pour and S["phase"] == "turn":
+		# デモでは、カードを置き終えたあと、カップが2列目の真上に来たところで注ぐ
 		var target := Board.BOARD_L + 1.5 * (Board.BOARD_R - Board.BOARD_L) / Board.COLS
 		if absf(board.cup_x - target) < 12.0:
-			_lock_cup()
+			demo_pour = false
+			_pour()
 
 	if screen == "battle":
 		match S["phase"]:
@@ -475,8 +483,6 @@ func _process(delta: float) -> void:
 					_start_turn()
 
 	_update_bullets(delta)
-	gun_spin += delta * (40.0 if S["phase"] == "fire" else 2.0)
-	recoil = maxf(0.0, recoil - delta * 60.0)
 	enemy_flash = maxf(0.0, enemy_flash - delta * 6.0)
 	shake = maxf(0.0, shake - delta * 50.0)
 	cam.offset = Vector2(randf_range(-shake, shake), randf_range(-shake, shake))
@@ -505,7 +511,6 @@ func _start_fire() -> void:
 	bullet_acc = 0.0
 	dmg_window = 0.0
 	dmg_window_t = 0.0
-	_say("発射！")
 	if S["ammo"] <= 0.0:
 		fire_t = FIRE_TIME
 
@@ -525,16 +530,16 @@ func _update_fire(delta: float) -> void:
 	dmg_window_t += delta
 
 	if S["ammo"] > 0.0:
-		var dir := (ENEMY_POS - GUN_POS).normalized()
 		bullet_acc += BULLET_RATE * delta
 		while bullet_acc >= 1.0:
 			bullet_acc -= 1.0
-			var d := dir.rotated(randf_range(-0.05, 0.05))
-			var muzzle := GUN_POS + dir * 145.0
+			# 受け皿のどこかから、台を突き抜けて上段の敵へ撃ち上げる
+			var bw := (Board.BOARD_R - Board.BOARD_L) / Board.BUCKETS.size()
+			var muzzle := Vector2(Board.BOARD_L + (randi() % Board.BUCKETS.size() + 0.5) * bw, Board.BUCKET_TOP - 6.0)
+			var d := (ENEMY_POS + Vector2(randf_range(-30, 30), randf_range(-20, 20)) - muzzle).normalized()
 			bullets.append({"p": muzzle, "v": d * BULLET_SPEED})
-			fx.flash(muzzle, "muzzle_0%d" % randi_range(1, 2), 120.0, dir.angle() + PI / 2.0, 0.06, Color(1.0, 0.8, 0.4))
+			fx.flash(muzzle, "muzzle_0%d" % randi_range(1, 2), 110.0, d.angle() + PI / 2.0, 0.06, Color(1.0, 0.8, 0.4))
 			fx.sound("gun", -8.0, 1.1)
-			recoil = 10.0
 			shake = maxf(shake, 3.0)
 		if dmg_window_t > 0.12 and dmg_window > 0.0:
 			fx.float_text(ENEMY_POS + Vector2(randf_range(-80, 80), randf_range(-60, 20)), Board.fmt(dmg_window),
@@ -552,7 +557,6 @@ func _update_fire(delta: float) -> void:
 		else:
 			S["phase"] = "next"
 			phase_timer = 0.8
-			_say("ノルマまであと %s。残り %d ターン" % [Board.fmt(S["enemy"]["hp"]), S["turns"] - S["turn"]])
 
 
 func _update_bullets(delta: float) -> void:
@@ -578,7 +582,6 @@ func _enemy_defeated() -> void:
 	fx.burst(ENEMY_POS, Color.from_hsv(S["enemy"]["hue"], 0.6, 1.0), 30, 500.0, 70.0, 0.8, "circle_05", 200.0)
 	fx.sound("win", -2.0)
 	create_tween().tween_property(self, "enemy_scale", 0.0, 0.35).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_IN)
-	_say("勝利！")
 	get_tree().create_timer(1.0).timeout.connect(_after_victory)
 
 
@@ -592,7 +595,6 @@ func _quota_failed() -> void:
 	var tw := create_tween()
 	tw.tween_property(self, "enemy_scale", 1.25, 0.15)
 	tw.tween_property(self, "enemy_scale", 1.0, 0.2)
-	_say("ノルマに届かなかった……")
 	get_tree().create_timer(1.2).timeout.connect(_show_game_over)
 
 
@@ -623,17 +625,21 @@ func _on_peg_hit(pos: Vector2, speed: float) -> void:
 		fx.sound("peg", -22.0, 1.3)
 
 
-func _on_ball_collected(val: float, pos: Vector2) -> void:
-	S["ammo"] += val + S["per_ball"]
-	fx.burst(Vector2(pos.x, Board.COLLECT_Y + 10), Color(1.0, 0.7, 0.4), 8, 260.0, 26.0, 0.35, "spark_01", 600.0)
+func _on_ball_collected(val: float, pos: Vector2, mult: float) -> void:
+	# 落ちた受け皿の倍率がかかる（真ん中ほど高い）
+	S["ammo"] += (val + S["per_ball"]) * mult
+	var col := Style.GOLD if mult >= 2.0 else (Style.ORANGE if mult >= 1.0 else Style.INK_DIM)
+	fx.burst(Vector2(pos.x, Board.BUCKET_TOP + 10), col, 8, 260.0, 26.0, 0.35, "spark_01", 600.0)
+	if mult != 1.0:
+		fx.float_text(Vector2(pos.x, Board.BUCKET_TOP - 10), "×%s" % ("%.1f" % mult).trim_suffix(".0"), col, 26, 40.0, 0.5)
 	fx.sound("collect", -10.0)
-	_punch(ui["ammo"])
+	_punch(ui["ammo_val"])
 
 
 func _on_chip_gained(amount: int, pos: Vector2) -> void:
 	S["chip"] += amount
 	fx.float_text(pos + Vector2(0, -20), "+%d" % amount, Color(0.75, 0.82, 0.95), 26, 40.0, 0.5)
-	_punch(ui["ammo"])
+	_punch(ui["ammo_val"])
 
 
 # ============================================================
@@ -873,6 +879,30 @@ func _show_deck() -> void:
 	screen = back
 
 
+## 山札・捨て札・除外の中身を一覧で見る（山札は順番が分からないように並べ替える）
+func _show_pile(kind: String) -> void:
+	if screen != "battle" or panel != null:
+		return
+	var cards: Array = S[kind].duplicate()
+	var names := {"draw": "山札", "discard": "捨て札", "exhaust": "除外"}
+	if kind == "draw":
+		cards.sort()
+	var p := _open_panel("%s（%d 枚）" % [names[kind], cards.size()])
+	var per_row := 8
+	for i in cards.size():
+		var card := _make_card(p, cards[i], Vector2(960 - per_row * 100 + (i % per_row) * 200 + 10, 180 + (i / per_row) * 195))
+		card.base_scale = 0.78
+		card.scale = Vector2.ONE * 0.78
+		card.pivot_offset = Vector2.ZERO
+		card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if cards.is_empty():
+		var l := _label(p, Vector2(0, 460), 36, Style.INK_DIM)
+		l.text = "まだ何もない"
+		l.size = Vector2(1920, 50)
+		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_button(p, Vector2(760, 960), Vector2(400, 90), "閉じる", _close_panel, "grey")
+
+
 func _show_victory() -> void:
 	screen = "victory"
 	_set_battle_visible(false)
@@ -891,7 +921,7 @@ func _show_game_over() -> void:
 	var l := _label(p, Vector2(0, 340), 36, Color(1, 1, 1, 0.9))
 	l.size = Vector2(1920, 140)
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	l.text = "第 %d 層で「%s」に倒された" % [R["floor"], S["enemy"]["name"]]
+	l.text = "第 %d 層「%s」のノルマに届かなかった" % [R["floor"], S["enemy"]["name"]]
 	_button(p, Vector2(760, 600), Vector2(400, 100), "タイトルへ", _show_title, "blue")
 
 
@@ -902,15 +932,13 @@ func _show_game_over() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if screen != "battle" or panel != null:
 		return
-	# スペース: ターン中なら注ぐ（狙い開始）、狙い中ならカップを止める
+	# スペース: 注ぐ（動いているカップをその場で止めて落とす）
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_SPACE:
-		_on_pour_button()
+		_pour()
 		return
 	if not (event is InputEventMouseButton and event.pressed):
 		return
-	if event.button_index == MOUSE_BUTTON_LEFT and S["phase"] == "aim":
-		_lock_cup()
-	elif event.button_index == MOUSE_BUTTON_RIGHT and S["selected"] >= 0:
+	if event.button_index == MOUSE_BUTTON_RIGHT and S["selected"] >= 0:
 		_cancel_select()
 	elif event.button_index == MOUSE_BUTTON_LEFT and S["phase"] == "turn" and S["selected"] >= 0:
 		var idx := board.slot_at(get_global_mouse_position())
@@ -922,23 +950,12 @@ func _unhandled_input(event: InputEvent) -> void:
 # 画面の部品
 # ============================================================
 
-func _label(parent: Node, pos: Vector2, font_size: int, color := Color.WHITE) -> Label:
+func _label(parent: Node, pos: Vector2, font_size: int, color := Style.INK) -> Label:
 	var l := Label.new()
 	l.position = pos
-	l.add_theme_font_override("font", font)
-	l.add_theme_font_size_override("font_size", font_size)
-	l.add_theme_color_override("font_color", color)
-	l.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.6))
-	l.add_theme_constant_override("outline_size", 6)
+	Style.ink(l, font_size, color)
 	parent.add_child(l)
 	return l
-
-
-func _tex_box(path: String, margin := 16) -> StyleBoxTexture:
-	var b := StyleBoxTexture.new()
-	b.texture = load(path)
-	b.set_texture_margin_all(margin)
-	return b
 
 
 func _button(parent: Node, pos: Vector2, sz: Vector2, text: String, cb: Callable, color := "blue", font_size := 30) -> Button:
@@ -947,17 +964,10 @@ func _button(parent: Node, pos: Vector2, sz: Vector2, text: String, cb: Callable
 	b.size = sz
 	b.text = text
 	b.focus_mode = Control.FOCUS_NONE
-	b.add_theme_font_override("font", font)
-	b.add_theme_font_size_override("font_size", font_size)
-	var dark := color in ["grey", "yellow"]
-	var fc := Color(0.15, 0.15, 0.2) if dark else Color.WHITE
-	for st in ["font_color", "font_hover_color", "font_pressed_color"]:
-		b.add_theme_color_override(st, fc)
-	b.add_theme_color_override("font_disabled_color", Color(0.3, 0.32, 0.38))
-	b.add_theme_stylebox_override("normal", _tex_box("res://assets/ui/%s_rect.png" % color))
-	b.add_theme_stylebox_override("hover", _tex_box("res://assets/ui/%s_rect.png" % ("yellow" if color != "yellow" else "green")))
-	b.add_theme_stylebox_override("pressed", _tex_box("res://assets/ui/green_rect.png"))
-	b.add_theme_stylebox_override("disabled", _tex_box("res://assets/ui/grey_rect.png"))
+	# 色の名前 → 塊の色。blue は「いちばん押してほしいボタン」なので自分の色（橙）
+	var palette := {"blue": Style.ORANGE, "grey": Style.PANEL.lightened(0.18), "yellow": Style.GOLD,
+		"green": Style.TEAL, "red": Style.RED}
+	Style.style_button(b, palette.get(color, Style.ORANGE), font_size)
 	if cb.is_valid():
 		b.pressed.connect(cb)
 	b.pressed.connect(fx.sound.bind("click", -6.0))
@@ -980,10 +990,10 @@ func _open_panel(title: String, keep_old := false) -> Control:
 		_close_panel()
 	var dim := ColorRect.new()
 	dim.size = Vector2(1920, 1080)
-	dim.color = Color(0.05, 0.06, 0.09, 0.93)
+	dim.color = Color(Style.BG, 0.88)
 	ui["screens"].add_child(dim)
 	if title != "":
-		var t := _label(dim, Vector2(0, 90), 54, Color(1.0, 0.9, 0.5))
+		var t := _label(dim, Vector2(0, 86), 64, Style.GOLD)
 		t.text = title
 		t.size = Vector2(1920, 80)
 		t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1011,52 +1021,55 @@ func _build_hud() -> void:
 	add_child(hud)
 	ui["hud"] = hud
 
-	ui["title"] = _label(hud, Vector2(60, 76), 36)
-	ui["turns"] = _label(hud, Vector2(60, 130), 30, Color(0.6, 0.9, 1.0))
-	var hp_bar := ProgressBar.new()
-	hp_bar.position = Vector2(60, 176)
-	hp_bar.size = Vector2(420, 24)
-	hp_bar.show_percentage = false
-	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(1, 1, 1, 0.12)
-	bg.set_corner_radius_all(8)
-	var fill := StyleBoxFlat.new()
-	fill.bg_color = Color(0.95, 0.65, 0.3)
-	fill.set_corner_radius_all(8)
-	hp_bar.add_theme_stylebox_override("background", bg)
-	hp_bar.add_theme_stylebox_override("fill", fill)
-	hud.add_child(hp_bar)
-	ui["quota_bar"] = hp_bar
-	ui["quota"] = _label(hud, Vector2(60, 214), 30, Color(1.0, 0.8, 0.5))
+	# 左の列（下）: 弾倉×倍率の箱、エネルギーと先の予定の窓。手札は左の列の上に並べる（_layout_hand）
+	ui["ammo_val"] = _score_box(hud, Vector2(40, 730), Vector2(240, 110), "弾倉", Style.BLUE)
+	_label(hud, Vector2(292, 752), 48, Style.INK).text = "×"
+	ui["mul_val"] = _score_box(hud, Vector2(340, 730), Vector2(220, 110), "倍率", Style.RED)
 
+	# 左下: エネルギーの玉（独立）と、ショップ・宝箱・休憩・強敵・ボスまであと何層かの札
 	var orb := Panel.new()
-	orb.position = Vector2(60, 280)
-	orb.size = Vector2(130, 130)
-	var orb_box := StyleBoxFlat.new()
-	orb_box.bg_color = Color(0.95, 0.55, 0.2)
-	orb_box.set_corner_radius_all(65)
-	orb_box.set_border_width_all(6)
-	orb_box.border_color = Color(1.0, 0.85, 0.55)
-	orb.add_theme_stylebox_override("panel", orb_box)
+	orb.position = Vector2(40, 872)
+	orb.size = Vector2(170, 170)
+	orb.add_theme_stylebox_override("panel", Style.box(Style.ORANGE, 85, 6, Style.ORANGE.darkened(0.45), 8))
 	hud.add_child(orb)
-	var energy := _label(orb, Vector2.ZERO, 48)
-	energy.size = orb.size
+	var e_title := _label(orb, Vector2(0, 28), 18, Style.INK)
+	e_title.text = "エネルギー"
+	e_title.size = Vector2(170, 30)
+	e_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var energy := _label(orb, Vector2(0, 54), 60)
+	energy.size = Vector2(170, 90)
 	energy.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	energy.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	ui["energy"] = energy
-	_label(hud, Vector2(210, 330), 26, Color(1, 1, 1, 0.7)).text = "エネルギー"
+	var tile_cols := {"shop": Style.GOLD, "treasure": Style.TEAL, "rest": Color("5fbf6a"), "elite": Style.RED, "boss": Style.PURPLE}
+	var ti := 0
+	for t in ["shop", "treasure", "rest", "elite", "boss"]:
+		var tile := Panel.new()
+		tile.position = Vector2(226 + (ti % 3) * 126, 864 + (ti / 3) * 100)
+		tile.size = Vector2(118, 92)
+		tile.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tile.add_theme_stylebox_override("panel", Style.box(Style.PANEL, 12, 4, tile_cols[t].darkened(0.2), 6))
+		hud.add_child(tile)
+		var tl := _label(tile, Vector2(0, 6), 20, tile_cols[t])
+		tl.text = TYPE_NAME[t]
+		tl.size = Vector2(118, 26)
+		tl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		var tv := _label(tile, Vector2(0, 30), 44, Style.INK)
+		tv.size = Vector2(118, 56)
+		tv.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		ui["ahead_" + t] = tv
+		ti += 1
 
-	ui["piles"] = _label(hud, Vector2(60, 440), 22, Color(1, 1, 1, 0.75))
-	ui["mods"] = _label(hud, Vector2(60, 476), 22, Color(1.0, 0.75, 0.45))
-	var msg := _label(hud, Vector2(60, 540), 26)
-	msg.size = Vector2(440, 240)
-	msg.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
-	ui["msg"] = msg
+	# 右の細い列: 山札・捨て札・除外（押すと中身が見られる）と、このターンの上乗せ
+	ui["pile_draw"] = _button(hud, Vector2(1712, 76), Vector2(192, 104), "", _show_pile.bind("draw"), "grey", 26)
+	ui["pile_discard"] = _button(hud, Vector2(1712, 196), Vector2(192, 104), "", _show_pile.bind("discard"), "grey", 26)
+	ui["pile_exhaust"] = _button(hud, Vector2(1712, 316), Vector2(192, 104), "", _show_pile.bind("exhaust"), "grey", 26)
+	var mods := _label(hud, Vector2(1716, 450), 24, Style.ORANGE)
+	mods.size = Vector2(190, 300)
+	mods.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
+	ui["mods"] = mods
 
-	var ammo := _label(hud, Vector2(1520, 690), 30, Color(1.0, 0.8, 0.5))
-	ui["ammo"] = ammo
-
-	var pour := _button(hud, Vector2(1480, 880), Vector2(400, 140), "", _on_pour_button, "blue", 32)
+	var pour := _button(hud, Vector2(1712, 850), Vector2(192, 210), "", _pour, "blue", 30)
 	ui["pour"] = pour
 
 	var hand_root := Control.new()
@@ -1089,16 +1102,13 @@ func _build_top_bar() -> void:
 	add_child(layer)
 	var bar := Panel.new()
 	bar.size = Vector2(1920, 56)
-	var box := StyleBoxFlat.new()
-	box.bg_color = Color(0.04, 0.05, 0.07, 0.95)
-	bar.add_theme_stylebox_override("panel", box)
+	bar.add_theme_stylebox_override("panel", Style.box(Style.PANEL_DARK, 0, 0, Style.PANEL_DARK, 6))
 	layer.add_child(bar)
 	ui["top"] = bar
-	ui["top_gold"] = _label(bar, Vector2(24, 8), 28, Color(1.0, 0.85, 0.4))
-	ui["top_floor"] = _label(bar, Vector2(170, 8), 28, Color(1, 1, 1, 0.85))
-	ui["top_ahead"] = _label(bar, Vector2(370, 13), 22, Color(0.75, 0.85, 1.0))
+	ui["top_gold"] = _label(bar, Vector2(24, 8), 32, Style.GOLD)
+	ui["top_floor"] = _label(bar, Vector2(180, 8), 32, Style.INK)
 	# レリックは数だけ出し、マウスを乗せると一覧と説明が出る
-	var relics := _label(bar, Vector2(1360, 10), 24, Color(0.85, 0.75, 1.0))
+	var relics := _label(bar, Vector2(1360, 10), 24, Style.PURPLE.lightened(0.3))
 	relics.mouse_filter = Control.MOUSE_FILTER_STOP
 	ui["top_relics"] = relics
 	_button(bar, Vector2(1560, 6), Vector2(180, 44), "デッキ", _show_deck, "grey", 22)
@@ -1127,6 +1137,24 @@ func _build_top_bar() -> void:
 	ui["volume"] = vol
 
 
+## 得点の箱（見出しと大きな数字）。数字の Label を返す
+func _score_box(parent: Node, pos: Vector2, sz: Vector2, title: String, color: Color) -> Label:
+	var p := Panel.new()
+	p.position = pos
+	p.size = sz
+	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	p.add_theme_stylebox_override("panel", Style.box(color, 14, 5, color.darkened(0.5), 8))
+	parent.add_child(p)
+	var t := _label(p, Vector2(0, 6), 24, Style.INK_DIM)
+	t.text = title
+	t.size = Vector2(sz.x, 30)
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var v := _label(p, Vector2(0, 38), 56, Style.INK)
+	v.size = Vector2(sz.x, 70)
+	v.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	return v
+
+
 func _toggle_volume() -> void:
 	ui["volume"].visible = not ui["volume"].visible
 
@@ -1144,6 +1172,8 @@ func _make_hand_card(id: String) -> Card:
 	var card := Card.new()
 	card.setup(id, font)
 	card.auto_hover = false
+	card.base_scale = HAND_SCALE
+	card.scale = Vector2.ONE * HAND_SCALE
 	card.pressed.connect(_on_card_pressed.bind(card))
 	ui["hand"].add_child(card)
 	hand_cards.append(card)
@@ -1151,14 +1181,11 @@ func _make_hand_card(id: String) -> Card:
 
 
 func _layout_hand() -> void:
-	# 枚数が多いときは重ねて、手札の幅を 1000px 以内に収める
+	# 左の列の上に 3列で並べる（最大 9枚 = 3段）
 	var n := hand_cards.size()
-	var step := minf(Card.SIZE.x + 16.0, (1000.0 - Card.SIZE.x) / maxf(n - 1, 1))
-	var total := (n - 1) * step + Card.SIZE.x
-	var x0 := 960.0 - total / 2.0
 	for i in n:
 		var card: Card = hand_cards[i]
-		card.base_pos = Vector2(x0 + i * step, 835.0)
+		card.base_pos = Vector2(28 + (i % 3) * 188, 100 + (i / 3) * 206)
 		card.create_tween().tween_property(card, "position", card.base_pos, 0.2).set_trans(Tween.TRANS_QUAD)
 
 
@@ -1168,8 +1195,9 @@ func _on_card_pressed(card: Card) -> void:
 		_play_card(i)
 
 
-func _say(text: String) -> void:
-	ui["msg"].text = text
+## 注意を盤面の上に短く出す（文章の欄は持たない）
+func _toast(text: String) -> void:
+	fx.float_text(Vector2((Board.BOARD_L + Board.BOARD_R) / 2.0, Board.CUP_Y + 20), text, Style.INK, 34, 50.0, 1.2)
 
 
 func _punch(node: Control) -> void:
@@ -1181,7 +1209,10 @@ func _punch(node: Control) -> void:
 func _update_ui() -> void:
 	ui["top_gold"].text = "%d G" % R["gold"]
 	ui["top_floor"].text = "第 %d 層／%d" % [R["floor"], ROUTE_LEN]
-	ui["top_ahead"].text = _ahead_text()
+	for t in ["shop", "treasure", "rest", "elite", "boss"]:
+		var n := _floors_until(t)
+		ui["ahead_" + t].text = str(n) if n >= 0 else "—"
+		ui["ahead_" + t].modulate.a = 1.0 if n >= 0 else 0.35
 	ui["top_relics"].text = "レリック %d" % R["relics"].size()
 	var tips := []
 	for rid in R["relics"]:
@@ -1189,37 +1220,31 @@ func _update_ui() -> void:
 	ui["top_relics"].tooltip_text = "\n".join(tips) if not tips.is_empty() else "まだ持っていない"
 	if screen != "battle":
 		return
-	var left: int = S["turns"] - S["turn"] + (1 if S["phase"] in ["turn", "aim", "pour", "fire"] else 0)
-	ui["turns"].text = "残り %d ターン（制限 %d）" % [maxi(left, 0), S["turns"]]
-	var e_now: Dictionary = S["enemy"]
-	ui["quota_bar"].max_value = e_now["max"]
-	ui["quota_bar"].value = e_now["max"] - maxf(e_now["hp"], 0.0)
-	ui["quota"].text = "ノルマ  %s / %s" % [Board.fmt(e_now["max"] - maxf(e_now["hp"], 0.0)), Board.fmt(e_now["max"])]
 	ui["energy"].text = "%d/%d" % [S["energy"], ENERGY]
-	ui["piles"].text = "山札 %d   捨て札 %d   除外 %d" % [S["draw"].size(), S["discard"].size(), S["exhaust"].size()]
-	var mods := ""
-	if S["next_energy"] > 0:
-		mods += "次ターン エネ+%d   " % S["next_energy"]
-	if S["next_draw"] > 0:
-		mods += "次ターン +%d枚   " % S["next_draw"]
-	if S["ammo_mul"] != 1.0:
-		mods += "弾倉 ×%.1f   " % S["ammo_mul"]
+	ui["pile_draw"].text = "山札\n%d" % S["draw"].size()
+	ui["pile_discard"].text = "捨て札\n%d" % S["discard"].size()
+	ui["pile_exhaust"].text = "除外\n%d" % S["exhaust"].size()
+	ui["ammo_val"].text = Board.fmt(_ammo_left() if S["phase"] == "fire" else S["ammo"] + S["chip"])
+	ui["mul_val"].text = ("%.1f" % S["ammo_mul"]).trim_suffix(".0")
+	var mods := []
 	if S["per_ball"] > 0:
-		mods += "玉ごと +%d" % S["per_ball"]
-	ui["mods"].text = mods
-	ui["ammo"].text = "弾倉 %s" % Board.fmt(_ammo_left())
+		mods.append("玉ごと +%d" % S["per_ball"])
+	if S["next_energy"] > 0:
+		mods.append("次ターン エネ +%d" % S["next_energy"])
+	if S["next_draw"] > 0:
+		mods.append("次ターン +%d 枚" % S["next_draw"])
+	ui["mods"].text = "\n".join(mods)
 	var turn: bool = S["phase"] == "turn"
-	var aim: bool = S["phase"] == "aim"
-	ui["pour"].disabled = not (turn or aim)
-	var waiting := {"aim": "ここで止める\n（クリック／スペース）", "pour": "注いでいる…", "fire": "撃っている…",
-		"next": "次のターンへ…"}
-	ui["pour"].text = "玉を %d 個注ぐ\nターン終了" % S["balls"] if turn else waiting.get(S["phase"], "…")
+	ui["pour"].disabled = not turn
+	var waiting := {"pour": "注いで\nいる…", "fire": "撃って\nいる…", "next": "次の\nターンへ"}
+	ui["pour"].text = "玉を%d個\n注ぐ\n（Space）" % S["balls"] if turn else waiting.get(S["phase"], "…")
 	# 手札の浮き上がり: マウスの下にある一番上（右側）のカード1枚だけ。定位置の範囲で判定するので、浮いても外れない
 	var mouse: Vector2 = ui["hand"].get_global_mouse_position()
 	var hover_i := -1
 	if panel == null:
 		for i in range(hand_cards.size() - 1, -1, -1):
-			if Rect2(hand_cards[i].base_pos + Vector2(0, -40), Card.SIZE + Vector2(0, 40)).has_point(mouse):
+			var shrink := Card.SIZE * (1.0 - HAND_SCALE) / 2.0
+			if Rect2(hand_cards[i].base_pos + shrink, Card.SIZE * HAND_SCALE).has_point(mouse):
 				hover_i = i
 				break
 	for i in hand_cards.size():
@@ -1237,68 +1262,143 @@ func _draw() -> void:
 		return
 	var e: Dictionary = S["enemy"]
 	var c := ENEMY_POS + enemy_offset + Vector2(0, sin(time * 2.2) * 6.0)
-	# 敵の頭上: 残りターンと、置いているハンデ（デメリットゲート）
-	var head := ENEMY_POS + Vector2(-200, -ENEMY_R - 100)
-	var left: int = maxi(S["turns"] - S["turn"] + (1 if S["phase"] in ["turn", "aim", "pour", "fire"] else 0), 0)
-	var turn_text := "残り %d ターン" % left
-	var turn_col := Color(1.0, 0.45, 0.4) if left <= 1 else Color(0.6, 0.9, 1.0)
-	draw_string_outline(font, head, turn_text, HORIZONTAL_ALIGNMENT_CENTER, 400, 34, 6, Color(0, 0, 0, 0.6))
-	draw_string(font, head, turn_text, HORIZONTAL_ALIGNMENT_CENTER, 400, 34, turn_col)
-	var hc: PackedStringArray = ("ハンデ: " + Data.handicap_text(e["id"])).split(" ／ ")
-	for li in hc.size():
-		var at := head + Vector2(0, 36 + li * 30)
-		var col := Color(1.0, 0.6, 0.6) if li == 0 else Color(1.0, 0.6, 0.9)
-		draw_string_outline(font, at, hc[li], HORIZONTAL_ALIGNMENT_CENTER, 400, 24, 5, Color(0, 0, 0, 0.6))
-		draw_string(font, at, hc[li], HORIZONTAL_ALIGNMENT_CENTER, 400, 24, col)
-	# 敵の体
-	var r := ENEMY_R * enemy_scale * (1.25 if e.get("boss", false) else 1.0)
+	# 台の上段 = 敵: 左に名前・残りターン・ハンデ・ノルマ、右に敵の絵
+	var lx := Board.BOARD_L + 10.0
+	var kind := "ボス" if e.get("boss", false) else ("強敵" if e.get("elite", false) else "戦闘")
+	draw_string(font, Vector2(lx, 112), "%s　%s" % [kind, e["name"]], HORIZONTAL_ALIGNMENT_LEFT, -1, 36, Style.INK)
+	var left: int = maxi(S["turns"] - S["turn"] + (1 if S["phase"] in ["turn", "pour", "fire"] else 0), 0)
+	var pill := Rect2(lx, 128, 230, 46)
+	draw_style_box(Style.box(Style.RED if left <= 1 else Style.TEAL.darkened(0.2), 12, 4, Style.PANEL_DARK, 6), pill)
+	draw_string(font, Vector2(pill.position.x, pill.position.y + 34), "残り %d ターン" % left, HORIZONTAL_ALIGNMENT_CENTER,
+		pill.size.x, 30, Style.INK)
+	# ハンデは札にして並べる（ゲート → 固有ハンデ）
+	var tags: Array = []
+	var counts := {}
+	for g in e["gates"]:
+		counts[g[0]] = counts.get(g[0], 0) + 1
+	for k in counts:
+		tags.append(["%s ×%d" % [Board.GATE_DEFS[k]["label"], counts[k]], Style.RED.darkened(0.35)])
+	if e.has("trait"):
+		tags.append([Data.TRAITS[e["trait"]], Style.PURPLE.darkened(0.3)])
+	var tx := pill.end.x + 14.0
+	var ty := 134.0
+	for tag in tags:
+		var w := font.get_string_size(tag[0], HORIZONTAL_ALIGNMENT_LEFT, -1, 22).x + 24.0
+		if tx + w > ENEMY_POS.x - ENEMY_R - 20.0:
+			tx = pill.end.x + 14.0
+			ty += 36.0
+		draw_style_box(Style.box(tag[1], 8, 3, Style.PANEL_DARK, 4), Rect2(tx, ty, w, 32))
+		draw_string(font, Vector2(tx + 12, ty + 24), tag[0], HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Style.INK)
+		tx += w + 8.0
+	# 残りノルマ（敵の HP として見せる）
+	var bar := Rect2(lx, 196, ENEMY_POS.x - ENEMY_R - 40.0 - lx, 36)
+	draw_style_box(Style.box(Style.PANEL_DARK, 10, 4, Style.PANEL_DARK, 6), bar.grow(4))
+	draw_rect(Rect2(bar.position, Vector2(bar.size.x * clampf(hp_trail / e["max"], 0.0, 1.0), bar.size.y)), Style.INK)
+	draw_rect(Rect2(bar.position, Vector2(bar.size.x * clampf(e["hp"] / e["max"], 0.0, 1.0), bar.size.y)), Style.RED)
+	var qt := "ノルマ あと %s ／ %s" % [Board.fmt(maxf(e["hp"], 0.0)), Board.fmt(e["max"])]
+	draw_string_outline(font, Vector2(bar.position.x, bar.position.y + 28), qt, HORIZONTAL_ALIGNMENT_CENTER, bar.size.x, 26, 5,
+		Color(0, 0, 0, 0.6))
+	draw_string(font, Vector2(bar.position.x, bar.position.y + 28), qt, HORIZONTAL_ALIGNMENT_CENTER, bar.size.x, 26, Style.INK)
+	# 敵の体: 名前から作る左右対称のドット絵（敵ごとに形が決まっている）
+	var r := ENEMY_R * enemy_scale * (1.12 if e.get("boss", false) else 1.0)
 	if r > 1.0:
-		var body := Color.from_hsv(e["hue"], 0.55, 0.85)
-		draw_circle(c + Vector2(0, r * 0.9), r * 0.8, Color(0, 0, 0, 0.25))
-		draw_circle(c, r + 6.0, body.darkened(0.5))
-		draw_circle(c, r, body)
-		draw_circle(c + Vector2(-r * 0.35, -r * 0.4), r * 0.25, Color(1, 1, 1, 0.18))
-		var look := (GUN_POS - c).normalized() * r * 0.06
-		for sx in [-1.0, 1.0]:
-			var eye := c + Vector2(sx * r * 0.32, -r * 0.1)
-			draw_circle(eye, r * 0.17, Color.WHITE)
-			draw_circle(eye + look, r * 0.08, Color(0.1, 0.1, 0.15))
-		draw_arc(c + Vector2(0, r * 0.25), r * 0.3, 0.3, PI - 0.3, 16, body.darkened(0.6), 6.0)
-		if e.get("boss", false):
-			# 王冠
-			var top := c + Vector2(0, -r - 4)
-			draw_colored_polygon(PackedVector2Array([top + Vector2(-50, 10), top + Vector2(-50, -30), top + Vector2(-25, -10),
-				top + Vector2(0, -40), top + Vector2(25, -10), top + Vector2(50, -30), top + Vector2(50, 10)]), Color(1.0, 0.82, 0.3))
-		if enemy_flash > 0.0:
-			draw_circle(c, r, Color(1, 1, 1, 0.6 * enemy_flash))
-	# 名前と残りノルマ
-	var bar := Rect2(ENEMY_POS.x - 190, ENEMY_POS.y + ENEMY_R + 50, 380, 30)
-	draw_string(font, Vector2(bar.position.x, bar.position.y - 12), e["name"], HORIZONTAL_ALIGNMENT_CENTER, bar.size.x, 30,
-		Color(1, 1, 1, 0.9))
-	draw_rect(bar, Color(1, 1, 1, 0.12))
-	draw_rect(Rect2(bar.position, Vector2(bar.size.x * clampf(hp_trail / e["max"], 0.0, 1.0), bar.size.y)), Color(1, 1, 1, 0.6))
-	draw_rect(Rect2(bar.position, Vector2(bar.size.x * clampf(e["hp"] / e["max"], 0.0, 1.0), bar.size.y)), Color(0.9, 0.28, 0.28))
-	draw_string(font, Vector2(bar.position.x, bar.position.y + 24), "残りノルマ %s / %s" % [Board.fmt(maxf(e["hp"], 0.0)),
-		Board.fmt(e["max"])], HORIZONTAL_ALIGNMENT_CENTER, bar.size.x, 22, Color.WHITE)
-
-	# ミニガン（敵の方を向き、撃つと銃身が回って反動で下がる）
-	var dir := (ENEMY_POS - GUN_POS).normalized()
-	var base := GUN_POS - dir * recoil
-	draw_circle(GUN_POS + Vector2(0, 50), 64.0, Color(0.22, 0.24, 0.3))
-	draw_set_transform(base, dir.angle(), Vector2.ONE * 1.5)
-	draw_rect(Rect2(-30, -30, 70, 60), Color(0.4, 0.43, 0.5))
-	for k in 3:
-		var off := sin(gun_spin + k * TAU / 3.0) * 14.0
-		var shade := 0.55 + 0.25 * cos(gun_spin + k * TAU / 3.0)
-		draw_line(Vector2(30, off), Vector2(95, off), Color(shade, shade + 0.02, shade + 0.08), 9.0)
-	draw_rect(Rect2(60, -22, 10, 44), Color(0.3, 0.32, 0.38))
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		_draw_enemy_sprite(c, r, e)
 
 	for bl in bullets:
 		var p: Vector2 = bl["p"]
 		var tail: Vector2 = p - bl["v"].normalized() * 40.0
 		draw_line(tail, p, Color(1.0, 0.85, 0.45, 0.9), 4.0)
 		draw_circle(p, 3.5, Color(1.0, 0.95, 0.8))
+
+
+## 敵のドット絵の形（11×10 のマス）。名前の hash を種にして、左右対称に作る。
+## 0: 空き / 1: 体 / 2: 目 / 3: 口
+func _enemy_pixels(id: String) -> Array:
+	if _sprite_cache.has(id):
+		return _sprite_cache[id]
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(id)
+	var w := 11
+	var h := 10
+	var grid := []
+	for y in h:
+		var row := []
+		row.resize(w)
+		row.fill(0)
+		grid.append(row)
+	for y in h:
+		for x in range(0, 6):
+			# 真ん中ほど埋まりやすく、上下の端ほど空きやすい
+			var dx := absf(x - 5.0) / 5.0
+			var dy := absf(y - 4.5) / 4.5
+			var p := 0.95 - dx * 0.55 - dy * dy * 0.5
+			if rng.randf() < p:
+				grid[y][x] = 1
+				grid[y][w - 1 - x] = 1
+	for y in range(2, 9):
+		grid[y][5] = 1
+	# 目と口
+	for ex in [3, 7]:
+		grid[3][ex] = 2
+		grid[4][ex] = 2
+	for mx in range(4, 7):
+		grid[6][mx] = 3
+	# 足（下の段）をランダムに
+	for x in range(1, 5):
+		if rng.randf() < 0.5:
+			grid[9][x] = 1
+			grid[9][w - 1 - x] = 1
+	_sprite_cache[id] = grid
+	return grid
+
+
+func _draw_enemy_sprite(c: Vector2, r: float, e: Dictionary) -> void:
+	var grid := _enemy_pixels(e["id"])
+	var h := grid.size()
+	var w: int = grid[0].size()
+	var cs := r * 2.0 / w  # 1マスの大きさ
+	var body := Color.from_hsv(e["hue"], 0.6, 0.95)
+	var origin := c - Vector2(w * cs, h * cs) / 2.0
+	var look := Vector2(-0.6, 1.0).normalized()  # 下の台を見下ろす
+	# 影 → 縁取り → 体 → 目と口 の順に重ねる
+	for pass_i in 3:
+		for y in h:
+			for x in w:
+				var v: int = grid[y][x]
+				if v == 0:
+					continue
+				var rc := Rect2(origin + Vector2(x, y) * cs, Vector2(cs, cs))
+				match pass_i:
+					0:
+						draw_rect(Rect2(rc.position + Vector2(0, cs * 0.6), rc.size), Color(0, 0, 0, 0.35))
+					1:
+						draw_rect(rc.grow(4.0), body.darkened(0.6))
+					2:
+						var col := body
+						if v == 2:
+							col = Style.INK
+						elif v == 3:
+							col = body.darkened(0.55)
+						elif y < h / 3:
+							col = body.lightened(0.15)  # 上の方を明るく
+						draw_rect(rc, col)
+						if v == 2 and y == 4:
+							# 瞳は銃の方を見る
+							draw_rect(Rect2(rc.position + Vector2(cs * 0.25 + look.x * cs * 0.2, -cs * 0.4), Vector2(cs * 0.5, cs * 0.7)),
+								Style.CARD_INK)
+	if e.get("boss", false):
+		# 王冠（ドット）
+		var top := origin + Vector2(w * cs / 2.0, -cs * 0.2)
+		for i in 5:
+			var hx := top.x + (i - 2) * cs
+			var hh := cs * (1.6 if i % 2 == 0 else 0.9)
+			draw_rect(Rect2(hx - cs / 2.0, top.y - hh, cs, hh), Style.GOLD)
+		draw_rect(Rect2(top.x - cs * 2.5, top.y - cs * 0.5, cs * 5, cs * 0.6), Style.GOLD.darkened(0.2))
+	if enemy_flash > 0.0:
+		for y in h:
+			for x in w:
+				if grid[y][x] != 0:
+					draw_rect(Rect2(origin + Vector2(x, y) * cs, Vector2(cs, cs)), Color(1, 1, 1, 0.7 * enemy_flash))
 
 
 func _save_shot() -> void:
@@ -1344,7 +1444,7 @@ func _run_demo() -> void:
 			_place_selected(step[1])
 		await get_tree().create_timer(0.35).timeout
 	await get_tree().create_timer(0.3).timeout
-	_pour()
+	demo_pour = true
 
 
 ## 画面めぐり: タイトル・ショップ・休憩・宝箱・戦闘・ボス戦・報酬・クリア・敗北を順に見せる
@@ -1404,6 +1504,7 @@ func _run_auto() -> void:
 	_start_run()
 	var last := ""
 	var last_floor := 0
+	var played_turn := -1
 	var steps := 0
 	while screen not in ["victory", "over"] and steps < 4000:
 		steps += 1
@@ -1416,7 +1517,10 @@ func _run_auto() -> void:
 				R["gold"], R["deck"].size(), ",".join(R["relics"])])
 		match screen:
 			"battle":
-				if S["phase"] == "turn":
+				if S["phase"] == "turn" and played_turn == S["turn"]:
+					if absf(board.cup_x - (Board.BOARD_L + Board.BOARD_R) / 2.0) < 40.0:
+						_pour()
+				elif S["phase"] == "turn":
 					for _k in 8:
 						var i := -1
 						for j in S["hand"].size():
@@ -1431,10 +1535,9 @@ func _run_auto() -> void:
 								_cancel_select()
 								break
 							_place_selected(board.highlight.keys()[0])
-					_pour()
-				elif S["phase"] == "aim":
-					if absf(board.cup_x - 960.0) < 40.0:
-						_lock_cup()
+					played_turn = S["turn"]
+					if absf(board.cup_x - (Board.BOARD_L + Board.BOARD_R) / 2.0) < 40.0:
+						_pour()
 				elif S["phase"] == "none" and panel != null:
 					var tag := "%s %d" % [S["enemy"]["name"], R["floor"]]
 					if tag != last:

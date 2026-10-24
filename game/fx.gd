@@ -26,7 +26,7 @@ var add_mat: CanvasItemMaterial
 
 
 func _ready() -> void:
-	font = load("res://assets/fonts/MPLUSRounded1c-Bold.ttf")
+	font = Style.font()
 	for n in ["spark_01", "spark_04", "spark_05", "star_06", "muzzle_01", "muzzle_02", "light_01", "circle_05", "smoke_01", "flare_01"]:
 		tex[n] = load("res://assets/fx/%s.png" % n)
 	for key in SOUNDS:
@@ -110,11 +110,7 @@ func flash(pos: Vector2, tex_name: String, size: float, rot: float, life: float,
 func float_text(pos: Vector2, text: String, color: Color, font_size := 32, rise := 70.0, life := 0.8) -> void:
 	var l := Label.new()
 	l.text = text
-	l.add_theme_font_override("font", font)
-	l.add_theme_font_size_override("font_size", font_size)
-	l.add_theme_color_override("font_color", color)
-	l.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	l.add_theme_constant_override("outline_size", 8)
+	Style.ink(l, font_size, color, 4)
 	l.size = Vector2(300, font_size + 16)
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	l.position = pos - Vector2(150, font_size)

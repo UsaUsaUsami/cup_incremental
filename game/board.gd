@@ -6,21 +6,27 @@ extends Node2D
 signal gate_passed(idx: int, type: String, pos: Vector2)
 signal gate_empty(idx: int)
 signal peg_hit(pos: Vector2, speed: float)
-signal ball_collected(val: float, pos: Vector2)
+signal ball_collected(val: float, pos: Vector2, mult: float)
 signal chip_gained(amount: int, pos: Vector2)
 
-const BOARD_L := 560.0
-const BOARD_R := 1360.0
-const BOARD_TOP := 100.0
+# 台（画面の主役）: 上段に敵、その下にカップ、4列×5行のゲート、底に倍率つきの受け皿
+const BOARD_L := 680.0
+const BOARD_R := 1640.0
+const BOARD_TOP := 64.0  # 台の枠の上端
+const BOARD_BOTTOM := 1072.0  # 台の枠の下端
+const DIVIDER_Y := 250.0  # 上段（敵）と盤面の仕切り
 const COLS := 4
 # 4列×5行。行が深いほど「順番で結果が変わる」が効く。ペグはゲートの行の間に置く
-const ROW_YS: Array[float] = [255.0, 355.0, 455.0, 555.0, 655.0]
-const PEG_YS: Array[float] = [305.0, 405.0, 505.0, 605.0, 705.0]
-const GATE_W := 160.0
-const GATE_H := 40.0
+const ROW_YS: Array[float] = [400.0, 500.0, 600.0, 700.0, 800.0]
+const PEG_YS: Array[float] = [450.0, 550.0, 650.0, 750.0, 850.0]
+const GATE_W := 190.0
+const GATE_H := 44.0
+# 底の受け皿: 落ちた場所で倍率が変わる（真ん中ほど高い）
+const BUCKETS: Array[float] = [0.5, 1.0, 2.0, 1.0, 0.5]
+const BUCKET_TOP := 960.0
 const MIN_VAL := 0.001  # 玉の値の下限（÷ や 1/x で 0 や無限大にならないように）
-const CUP_Y := 175.0
-const COLLECT_Y := 760.0
+const CUP_Y := 310.0
+const COLLECT_Y := 975.0  # 玉がここまで落ちたら受け皿に入る
 const BALL_R := 10.0
 const BALL_R_MAX := 34.0
 const PEG_R := 7.0
@@ -66,20 +72,19 @@ var mul_bonus := 0.0  # レリックによる × のゲートの上乗せ
 var to_pour := 0
 var pour_acc := 0.0
 var ammo_shown := 0.0
+var bucket_flash: Array[float] = [0.0, 0.0, 0.0, 0.0, 0.0]  # 玉が入った受け皿を一瞬光らせる
 var t := 0.0
 
 var font: Font
 var glow_tex: Texture2D
-var gate_box: StyleBoxTexture
+var gate_box: StyleBoxFlat
 var glow_layer: Node2D
 
 
 func _ready() -> void:
-	font = load("res://assets/fonts/MPLUSRounded1c-Bold.ttf")
+	font = Style.font()
 	glow_tex = load("res://assets/fx/light_01.png")
-	gate_box = StyleBoxTexture.new()
-	gate_box.texture = load("res://assets/ui/grey_rect.png")
-	gate_box.set_texture_margin_all(14)
+	gate_box = Style.box(Style.PANEL, 8, 4, Style.PANEL_DARK, 5)
 	slots.resize(COLS * ROW_YS.size())
 	reset_pegs()
 	# 玉の光は加算合成の別レイヤーで描く
@@ -146,24 +151,30 @@ func ball_radius(val: float) -> float:
 	return clampf(BALL_R + 5.0 * log(maxf(val, MIN_VAL)) / log(10.0), 4.0, BALL_R_MAX)
 
 
+## x の位置にある受け皿の番号
+static func bucket_at(x: float) -> int:
+	var w := (BOARD_R - BOARD_L) / BUCKETS.size()
+	return clampi(int((x - BOARD_L) / w), 0, BUCKETS.size() - 1)
+
+
 ## ペグを標準の互い違いの並びに戻す
 func reset_pegs() -> void:
 	pegs.clear()
 	for k in PEG_YS.size():
-		var x := BOARD_L + (60.0 if k % 2 else 110.0)
+		var x := BOARD_L + (60.0 if k % 2 else 120.0)
 		while x < BOARD_R - 30.0:
 			pegs.append(Vector2(x, PEG_YS[k]))
-			x += 100.0
+			x += 120.0
 
 
 ## ペグの並びを行ごとにランダムにずらす（ボスの仕掛け）
 func shuffle_pegs() -> void:
 	pegs.clear()
 	for k in PEG_YS.size():
-		var x := BOARD_L + randf_range(30.0, 100.0)
+		var x := BOARD_L + randf_range(30.0, 120.0)
 		while x < BOARD_R - 30.0:
 			pegs.append(Vector2(x, PEG_YS[k] + randf_range(-12.0, 12.0)))
-			x += randf_range(70.0, 120.0)
+			x += randf_range(85.0, 140.0)
 
 
 func clear_board() -> void:
@@ -209,6 +220,8 @@ func slot_at(pos: Vector2) -> int:
 
 func _process(delta: float) -> void:
 	t += delta
+	for k in bucket_flash.size():
+		bucket_flash[k] = maxf(0.0, bucket_flash[k] - delta)
 	if sweeping:
 		cup_x += sweep_dir * sweep_speed * delta
 		if cup_x > CUP_MAX:
@@ -280,7 +293,9 @@ func _update_balls(delta: float) -> void:
 
 		if b["p"].y >= COLLECT_Y:
 			balls.remove_at(i)
-			ball_collected.emit(b["val"], b["p"])
+			var k := bucket_at(b["p"].x)
+			bucket_flash[k] = 0.25
+			ball_collected.emit(b["val"], b["p"], BUCKETS[k])
 
 
 func _apply_gate(b: Dictionary, g: Dictionary, idx: int) -> void:
@@ -343,9 +358,11 @@ func _effect(b: Dictionary, g: Dictionary, idx: int) -> void:
 
 func _draw() -> void:
 	# 盤面の地と枠
-	var area := Rect2(BOARD_L - 20, BOARD_TOP, BOARD_R - BOARD_L + 40, COLLECT_Y + 34 - BOARD_TOP)
-	draw_rect(area, Color(0.1, 0.11, 0.16))
-	draw_rect(area, Color(1, 1, 1, 0.08), false, 3.0)
+	var area := Rect2(BOARD_L - 40, BOARD_TOP, BOARD_R - BOARD_L + 80, BOARD_BOTTOM - BOARD_TOP)
+	draw_style_box(Style.box(Style.PANEL_DARK, 22, 8, Style.PANEL.lightened(0.15), 12), area)
+	# 上段（敵のいる場所）は少し明るくして、仕切りの線を引く
+	draw_rect(Rect2(area.position + Vector2(8, 8), Vector2(area.size.x - 16, DIVIDER_Y - BOARD_TOP - 8)), Color(1, 1, 1, 0.04))
+	draw_line(Vector2(area.position.x + 8, DIVIDER_Y), Vector2(area.end.x - 8, DIVIDER_Y), Style.PANEL.lightened(0.15), 6.0)
 
 	# 狙い中は、カップの通り道と落ちる位置の目安の線を見せる
 	if sweeping:
@@ -369,8 +386,9 @@ func _draw() -> void:
 
 	# ペグ
 	for peg in pegs:
-		draw_circle(peg, PEG_R, Color(0.72, 0.75, 0.84))
-		draw_circle(peg + Vector2(-2, -2), 2.5, Color(1, 1, 1, 0.7))
+		draw_rect(Rect2(peg - Vector2(PEG_R, PEG_R) + Vector2(0, 3), Vector2(PEG_R, PEG_R) * 2), Color(0, 0, 0, 0.5))
+		draw_rect(Rect2(peg - Vector2(PEG_R, PEG_R), Vector2(PEG_R, PEG_R) * 2), Style.INK.darkened(0.25))
+		draw_rect(Rect2(peg - Vector2(PEG_R, PEG_R), Vector2(PEG_R, 4)), Style.INK)
 
 	# ゲート
 	for i in slots.size():
@@ -394,7 +412,8 @@ func _draw() -> void:
 			col = col.lightened(0.45)
 		var grow: float = 10.0 * (g["pop"] / 0.35) + 4.0 * (g["flash"] / 0.18)
 		var rr := r.grow(grow)
-		gate_box.modulate_color = col
+		gate_box.bg_color = col
+		gate_box.border_color = col.darkened(0.5)
 		draw_style_box(gate_box, rr)
 		var label: String = gate_label(g)
 		draw_string_outline(font, Vector2(rr.position.x, rr.get_center().y + 11), label, HORIZONTAL_ALIGNMENT_CENTER,
@@ -424,17 +443,22 @@ func _draw() -> void:
 			var c := Color(1, 1, 1, 0.85) if k < g["uses"] else Color(1, 1, 1, 0.15)
 			draw_circle(Vector2(x0 + k * dot_w + dot_w / 2.0, r.end.y + 9.0), 3.0, c)
 
-	# 回収口（弾倉へ送るベルト）
-	var belt := Rect2(BOARD_L - 20, COLLECT_Y, BOARD_R - BOARD_L + 40, 34)
-	draw_rect(belt, Color(0.55, 0.2, 0.2))
-	var stripe := fmod(t * 120.0, 40.0)
-	var x := belt.position.x - 40.0 + stripe
-	while x < belt.end.x:
-		draw_line(Vector2(maxf(x, belt.position.x), belt.position.y), Vector2(minf(x + 20.0, belt.end.x), belt.end.y),
-			Color(1, 1, 1, 0.08), 8.0)
-		x += 40.0
-	draw_string(font, Vector2(belt.position.x + 14, belt.position.y + 26), "弾倉  %s" % fmt(ammo_shown),
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 24, Color.WHITE)
+	# 底の受け皿（場所ごとの倍率）
+	var bw := (BOARD_R - BOARD_L) / BUCKETS.size()
+	for k in BUCKETS.size():
+		var m: float = BUCKETS[k]
+		var r := Rect2(BOARD_L + k * bw + 4, BUCKET_TOP, bw - 8, BOARD_BOTTOM - 20 - BUCKET_TOP)
+		var col := Style.GOLD if m >= 2.0 else (Style.TEAL.darkened(0.2) if m >= 1.0 else Style.PANEL.lightened(0.1))
+		if bucket_flash[k] > 0.0:
+			col = col.lightened(0.4 * bucket_flash[k] / 0.25)
+		draw_style_box(Style.box(col, 10, 4, col.darkened(0.55), 4), r)
+		var lbl := "×%s" % ("%.1f" % m).trim_suffix(".0")
+		var ink := Style.CARD_INK if m >= 2.0 else Style.INK
+		draw_string(font, Vector2(r.position.x, r.get_center().y + 14), lbl, HORIZONTAL_ALIGNMENT_CENTER, r.size.x, 40, ink)
+	# 受け皿の仕切り（ペグと同じドットの柱）
+	for k in range(1, BUCKETS.size()):
+		var x := BOARD_L + k * bw
+		draw_rect(Rect2(x - 4, BUCKET_TOP - 40, 8, 40), Style.INK.darkened(0.25))
 
 	# 玉
 	for b in balls:
